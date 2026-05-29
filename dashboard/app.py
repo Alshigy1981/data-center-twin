@@ -13,12 +13,20 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import httpx
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
+import streamlit.components.v1 as components
+
+from viz3d import make_3d_figure
+from viz3d_three import make_three_html
 
 # ─────────────────────────────────────────
 # 1. PAGE CONFIG
@@ -527,82 +535,94 @@ with k6:
 st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
-# 5. THERMAL MAP
+# 5. VISUALIZATION — 2D Heatmap / 3D Plotly / 3D WebGL
 # ─────────────────────────────────────────
 
-section_header("Floor Thermal Map", "🌡️")
+section_header("Data Center Floor Visualization", "🏗️")
 
-if telemetry and telemetry.get("racks"):
-    racks = telemetry["racks"]
+tab_2d, tab_3d_plotly, tab_3d_webgl = st.tabs([
+    "📊  2D Heatmap",
+    "📦  3D Plotly",
+    "✨  3D WebGL (Three.js)",
+])
 
-    # Build grid: 8 rows (4 per room) × 10 columns
-    rooms = ["Room A", "Room B"]
-    rows_labels = []
-    z_data = []
-    text_data = []
+# ── Tab 1: classic 2D heatmap ────────────────────────────────────────────────
+with tab_2d:
+    if telemetry and telemetry.get("racks"):
+        racks = telemetry["racks"]
+        rooms = ["Room A", "Room B"]
+        rows_labels, z_data, text_data = [], [], []
 
-    for room in rooms:
-        for row_num in range(1, 5):
-            row_label = f"{room} R{row_num}"
-            rows_labels.append(row_label)
-            row_racks = [
-                r for r in racks
-                if r.get("room") == room and r.get("row") == f"Row {row_num}"
-            ]
-            row_racks.sort(key=lambda r: r.get("position", 0))
-            # Pad to 10 if needed
-            temps = [r["inlet_temp_c"] for r in row_racks[:10]]
-            powers = [r["power_kw"] for r in row_racks[:10]]
-            outlets = [r["outlet_temp_c"] for r in row_racks[:10]]
-            ashraes = [r.get("ashrae_class", "A1") for r in row_racks[:10]]
-            asset_ids = [r["asset_id"] for r in row_racks[:10]]
-            while len(temps) < 10:
-                temps.append(None)
-                powers.append(None)
-                outlets.append(None)
-                ashraes.append("—")
-                asset_ids.append("—")
-            z_data.append(temps)
-            texts = [
-                f"<b>{aid}</b><br>Inlet: {t:.1f}°C<br>Outlet: {o:.1f}°C<br>Power: {p:.1f} kW<br>ASHRAE: {a}"
-                if t is not None else "—"
-                for aid, t, o, p, a in zip(asset_ids, temps, outlets, powers, ashraes)
-            ]
-            text_data.append(texts)
+        for room in rooms:
+            for row_num in range(1, 5):
+                row_label = f"{room} R{row_num}"
+                rows_labels.append(row_label)
+                row_racks = sorted(
+                    [r for r in racks
+                     if r.get("room") == room and r.get("row") == f"Row {row_num}"],
+                    key=lambda r: r.get("position", 0),
+                )
+                temps     = [r["inlet_temp_c"]  for r in row_racks[:10]]
+                powers    = [r["power_kw"]       for r in row_racks[:10]]
+                outlets   = [r["outlet_temp_c"]  for r in row_racks[:10]]
+                ashraes   = [r.get("ashrae_class", "A1") for r in row_racks[:10]]
+                asset_ids = [r["asset_id"]       for r in row_racks[:10]]
+                while len(temps) < 10:
+                    temps.append(None); powers.append(None)
+                    outlets.append(None); ashraes.append("—"); asset_ids.append("—")
+                z_data.append(temps)
+                text_data.append([
+                    f"<b>{aid}</b><br>Inlet: {t:.1f}°C<br>Outlet: {o:.1f}°C"
+                    f"<br>Power: {p:.1f} kW<br>ASHRAE: {a}"
+                    if t is not None else "—"
+                    for aid, t, o, p, a in zip(asset_ids, temps, outlets, powers, ashraes)
+                ])
 
-    colorscale = [
-        [0.0, "#0088cc"],
-        [0.3, "#00cc88"],
-        [0.6, "#ffaa00"],
-        [0.8, "#ff6600"],
-        [1.0, "#ff2222"],
-    ]
-
-    fig_heat = go.Figure(
-        go.Heatmap(
+        fig_heat = go.Figure(go.Heatmap(
             z=z_data,
             x=[f"Rack {i}" for i in range(1, 11)],
             y=rows_labels,
             text=text_data,
             hovertemplate="%{text}<extra></extra>",
-            colorscale=colorscale,
-            zmin=16,
-            zmax=38,
+            colorscale=[[0.0,"#0088cc"],[0.3,"#00cc88"],
+                        [0.6,"#ffaa00"],[0.8,"#ff6600"],[1.0,"#ff2222"]],
+            zmin=16, zmax=38,
             colorbar=dict(
                 title=dict(text="°C", font=dict(color="#9ab8d0")),
                 tickfont=dict(color="#9ab8d0"),
-                bgcolor="#0a1520",
-                outlinecolor="#1a3050",
+                bgcolor="#0a1520", outlinecolor="#1a3050",
             ),
-            xgap=2,
-            ygap=2,
-        )
+            xgap=2, ygap=2,
+        ))
+        apply_dark_layout(fig_heat, "Floor Thermal Map — Rack Inlet Temperature (°C)")
+        fig_heat.update_layout(height=340)
+        st.plotly_chart(fig_heat, use_container_width=True)
+    else:
+        st.info("Waiting for thermal data…")
+
+# ── Tab 2: Plotly 3D mesh ─────────────────────────────────────────────────────
+with tab_3d_plotly:
+    st.caption(
+        "Racks coloured by inlet temperature · height = power draw · "
+        "drag to rotate · scroll to zoom"
     )
-    apply_dark_layout(fig_heat, "Floor Thermal Map — Rack Inlet Temperature (°C)")
-    fig_heat.update_layout(height=320)
-    st.plotly_chart(fig_heat, use_container_width=True)
-else:
-    st.info("Waiting for thermal data...")
+    try:
+        fig_3d = make_3d_figure(telemetry)
+        st.plotly_chart(fig_3d, use_container_width=True)
+    except Exception as e:
+        st.warning(f"3D Plotly view unavailable: {e}")
+
+# ── Tab 3: Three.js WebGL ─────────────────────────────────────────────────────
+with tab_3d_webgl:
+    st.caption(
+        "WebGL · physically-based lighting · hot racks pulse · "
+        "drag to rotate · scroll to zoom · hover for details"
+    )
+    try:
+        html_src = make_three_html(telemetry, width=1180, height=700)
+        components.html(html_src, height=720, scrolling=False)
+    except Exception as e:
+        st.warning(f"3D WebGL view unavailable: {e}")
 
 # ─────────────────────────────────────────
 # 6. TWO-COLUMN ROW: Temperature + Power trends
