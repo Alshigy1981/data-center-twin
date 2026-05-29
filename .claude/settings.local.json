@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(uvicorn backend.main:app --port 8000)",
+      "Bash(echo \"API PID: $!\")",
+      "Bash(pkill -f \"uvicorn backend.main\")",
+      "Bash(curl -s http://localhost:8000/health)",
+      "Bash(git commit *)",
+      "Bash(gh auth *)",
+      "Bash(chmod +x *)",
+      "Bash(open \"dist/DC Twin.app\")",
+      "Bash(git add *)",
+      "Bash(pkill -f \"streamlit run\")",
+      "Bash(streamlit run *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8501)",
+      "Bash(pip index *)",
+      "Bash(conda install *)",
+      "Bash(curl -s --max-time 5 https://pypi.org/pypi/torch/json)",
+      "Bash(pip config *)",
+      "Bash(curl -s -I \"https://files.pythonhosted.org/packages/\")",
+      "Bash(MACOSX_DEPLOYMENT_TARGET=13.0 pip install torch --quiet)",
+      "Bash(_PYTHON_HOST_PLATFORM=macosx-13.0-x86_64 pip install torch --quiet)"
+    ]
+  }
+}
