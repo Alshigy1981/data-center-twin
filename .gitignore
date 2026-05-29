@@ -6,6 +6,10 @@ __pycache__/
 .env
 *.egg-info/
 dist/
-build/
+# Ignore PyInstaller artefacts inside build/ but keep source spec + scripts
+build/__pycache__/
+build/dc_twin/
+build/warn-*.txt
+build/xref-*.html
 .pytest_cache/
 .DS_Store
