@@ -12,19 +12,27 @@ aiosqlite>=0.19.0
 streamlit>=1.28.0
 plotly>=5.15.0
 pandas>=2.0.0
-numpy>=1.24.0
+numpy>=1.24.0,<2.0.0
 scipy>=1.11.0
 httpx>=0.24.0
+
+# Multi-objective optimizer
+# scipy is already listed above; no additional packages needed
+
+# Reinforcement learning
+# NOTE: PyTorch does not publish macOS wheels to the CPU-only index.
+#       On macOS, install via: pip install torch
+#       On Linux, install via: pip install torch --index-url https://download.pytorch.org/whl/cpu
+# NOTE: PyTorch requires Python <=3.12. Create a Python 3.11 venv before installing:
+#       python3.11 -m venv .venv && source .venv/bin/activate
+torch>=2.0.0
+stable-baselines3>=2.4.0   # gymnasium 1.x API (5-tuple step)
+gymnasium>=1.0.0            # 1.0 introduced breaking API change (truncated flag, seed kwarg)
+tensorboard>=2.14.0
 
 # Desktop packaging
 pywebview>=4.0.0
 pyinstaller>=6.0.0
-
-# Reinforcement learning
-stable-baselines3>=2.3.0
-gymnasium>=0.29.0
-torch>=2.0.0
-tensorboard>=2.14.0
 
 # Testing
 pytest>=7.4.0
