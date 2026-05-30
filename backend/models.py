@@ -333,6 +333,83 @@ class EventLogResponse(BaseModel):
 
 
 # ─────────────────────────────────────────
+# Multi-Objective Optimizer Models
+# ─────────────────────────────────────────
+
+class ParetoPoint(BaseModel):
+    """Single point on the PUE vs thermal-risk Pareto front."""
+    chw_setpoint_c: float = Field(..., description="Chilled water supply temperature °C")
+    crac_setpoint_c: float = Field(..., description="CRAC supply air temperature °C")
+    pue: float = Field(..., description="Power Usage Effectiveness at this setpoint pair")
+    thermal_risk_score: float = Field(..., description="Thermal risk penalty (0 = safe, >0 = approaching ASHRAE limit)")
+    carbon_kg_hr: float = Field(..., description="Carbon emissions kg CO₂/hr")
+    cop: float = Field(..., description="Chiller COP at this CHW setpoint")
+    crac_fan_power_kw: float = Field(..., description="CRAC fan power kW")
+    chiller_power_kw: float = Field(..., description="Chiller electrical power kW")
+
+
+class OptimizerResult(BaseModel):
+    """Response from the multi-objective cooling setpoint optimizer."""
+    timestamp: datetime = Field(..., description="Optimization timestamp")
+    optimal_chw_setpoint_c: float = Field(..., description="Recommended chilled water supply setpoint °C")
+    optimal_crac_setpoint_c: float = Field(..., description="Recommended CRAC supply air setpoint °C")
+    expected_pue: float = Field(..., description="Expected PUE at optimal setpoints")
+    expected_carbon_kg_hr: float = Field(..., description="Expected carbon emissions at optimal setpoints kg CO₂/hr")
+    expected_cop: float = Field(..., description="Expected chiller COP at optimal setpoints")
+    thermal_risk_score: float = Field(..., description="Thermal risk score at optimal setpoints")
+    crac_fan_power_kw: float = Field(..., description="Expected CRAC fan power kW")
+    chiller_power_kw: float = Field(..., description="Expected chiller power kW")
+    current_pue: float = Field(..., description="Current operating PUE")
+    pue_improvement: float = Field(..., description="PUE reduction achieved by switching to optimal setpoints")
+    carbon_reduction_kg_hr: float = Field(..., description="Carbon reduction kg CO₂/hr vs current operating point")
+    it_load_kw: float = Field(..., description="Current IT load used in optimization kW")
+    avg_rack_outlet_c: float = Field(..., description="Average rack outlet temperature used in optimization °C")
+    converged: bool = Field(..., description="Whether the optimizer converged")
+    iterations: int = Field(..., description="Number of optimizer iterations")
+    weights: Dict[str, float] = Field(..., description="Objective weights used: pue, carbon, thermal_risk")
+    pareto_front: List[ParetoPoint] = Field(default_factory=list, description="Pareto-efficient setpoint pairs")
+
+
+# ─────────────────────────────────────────
+# RL Maintenance Agent Models
+# ─────────────────────────────────────────
+
+class AssetRiskEntry(BaseModel):
+    """Per-asset health and risk metrics from the maintenance agent."""
+    asset_id: str = Field(..., description="Asset identifier")
+    asset_type: str = Field(..., description="Asset category: CRAC, Chiller, or UPS")
+    health_score: float = Field(..., ge=0.0, le=1.0, description="Normalised health score (1.0 = perfect)")
+    failure_probability_30d: float = Field(..., ge=0.0, le=1.0, description="Estimated failure probability over next 30 days")
+    maintenance_recommended: bool = Field(..., description="True if the agent recommends scheduling maintenance")
+    anomaly_score: float = Field(..., ge=0.0, le=1.0, description="Accumulated anomaly intensity (0 = none)")
+
+
+class MaintenanceScheduleResponse(BaseModel):
+    """Response from the PPO maintenance scheduling agent."""
+    timestamp: datetime = Field(..., description="Schedule generation timestamp")
+    assets_scheduled: List[str] = Field(default_factory=list, description="Asset IDs recommended for maintenance")
+    n_scheduled: int = Field(..., description="Number of assets scheduled for maintenance")
+    risk_summary: List[AssetRiskEntry] = Field(default_factory=list, description="Full per-asset health snapshot")
+    policy: str = Field(..., description="Policy used: ppo or rule_based")
+    training_steps: int = Field(default=0, description="Total PPO training timesteps completed")
+
+
+class TrainingRequest(BaseModel):
+    """Request body to trigger PPO training."""
+    total_timesteps: int = Field(
+        default=50_000, ge=1_000, le=500_000,
+        description="Timesteps to train (adds to any existing training)",
+    )
+
+
+class TrainingResponse(BaseModel):
+    """Response after a PPO training run."""
+    status: str = Field(..., description="Training outcome")
+    total_timesteps: int = Field(..., description="Cumulative training timesteps")
+    model_path: str = Field(..., description="Path where the model was saved")
+
+
+# ─────────────────────────────────────────
 # Health Check Model
 # ─────────────────────────────────────────
 

@@ -47,6 +47,7 @@ from backend.models import (
     Alert,
     AlertSeverity,
     AssetInventory,
+    AssetRiskEntry,
     BindingConstraint,
     CarbonMetrics,
     ChillerAsset,
@@ -56,6 +57,9 @@ from backend.models import (
     EventLogEntry,
     EventLogResponse,
     HealthResponse,
+    MaintenanceScheduleResponse,
+    OptimizerResult,
+    ParetoPoint,
     PDUAsset,
     PDUTelemetry,
     Priority,
@@ -66,12 +70,16 @@ from backend.models import (
     StrandedCapacityMetrics,
     TelemetryHistory,
     TelemetrySnapshot,
+    TrainingRequest,
+    TrainingResponse,
     TrendDirection,
     UPSAsset,
     UPSTelemetry,
     WhatIfRequest,
     WhatIfResponse,
 )
+from backend.optimizer import compute_pareto_front, optimize_setpoints
+from backend.rl_agent import get_agent
 from backend.simulator import build_asset_inventory, get_last_snapshot, start_simulation
 
 load_dotenv()
@@ -569,3 +577,99 @@ def events_log(
             for r in rows
         ],
     )
+
+
+# ─────────────────────────────────────────
+# Multi-Objective Optimizer Endpoints
+# ─────────────────────────────────────────
+
+@app.get(
+    "/optimize/cooling",
+    response_model=OptimizerResult,
+    summary="Multi-objective cooling setpoint optimizer",
+    description=(
+        "Finds optimal CHW and CRAC setpoints minimizing a weighted combination of "
+        "PUE, carbon emissions, and thermal risk. Includes a Pareto front approximation "
+        "over the setpoint search space for trade-off visualization."
+    ),
+    tags=["Optimization"],
+)
+def optimize_cooling(
+    w_pue: float = Query(default=0.5, ge=0.0, le=1.0, description="Weight on PUE objective"),
+    w_carbon: float = Query(default=0.3, ge=0.0, le=1.0, description="Weight on carbon objective"),
+    w_risk: float = Query(default=0.2, ge=0.0, le=1.0, description="Weight on thermal risk objective"),
+) -> OptimizerResult:
+    snap = get_last_snapshot()
+    if not snap or not snap.racks:
+        raise HTTPException(status_code=503, detail="No telemetry available.")
+
+    result = optimize_setpoints(snap, w_pue=w_pue, w_carbon=w_carbon, w_risk=w_risk)
+    pareto = compute_pareto_front(snap)
+
+    return OptimizerResult(
+        timestamp=datetime.utcnow(),
+        **result,
+        pareto_front=[ParetoPoint(**p) for p in pareto],
+    )
+
+
+@app.get(
+    "/optimize/pareto",
+    response_model=List[ParetoPoint],
+    summary="Cooling Pareto front",
+    description=(
+        "Returns Pareto-efficient (chw_setpoint, crac_setpoint) pairs that trade off "
+        "PUE against thermal risk. Useful for dashboard scatter plots."
+    ),
+    tags=["Optimization"],
+)
+def pareto_front() -> List[ParetoPoint]:
+    snap = get_last_snapshot()
+    if not snap or not snap.racks:
+        raise HTTPException(status_code=503, detail="No telemetry available.")
+    return [ParetoPoint(**p) for p in compute_pareto_front(snap)]
+
+
+# ─────────────────────────────────────────
+# PPO Maintenance Agent Endpoints
+# ─────────────────────────────────────────
+
+@app.get(
+    "/rl/maintenance-schedule",
+    response_model=MaintenanceScheduleResponse,
+    summary="PPO maintenance schedule",
+    description=(
+        "Returns a maintenance schedule produced by the trained PPO policy. "
+        "Falls back to a rule-based schedule (health < 0.4 or anomaly > 0.5) "
+        "if the model has not been trained yet."
+    ),
+    tags=["RL Agent"],
+)
+def maintenance_schedule() -> MaintenanceScheduleResponse:
+    agent = get_agent()
+    result = agent.get_schedule()
+    return MaintenanceScheduleResponse(
+        timestamp=datetime.utcnow(),
+        assets_scheduled=result["assets_scheduled"],
+        n_scheduled=result["n_scheduled"],
+        risk_summary=[AssetRiskEntry(**e) for e in result["risk_summary"]],
+        policy=result["policy"],
+        training_steps=result["training_steps"],
+    )
+
+
+@app.post(
+    "/rl/train",
+    response_model=TrainingResponse,
+    summary="Train PPO maintenance agent",
+    description=(
+        "Triggers a synchronous PPO training run for the specified number of timesteps. "
+        "Subsequent calls add to the existing training (no reset). "
+        "Model is persisted to assets/ppo_maintenance.zip after training."
+    ),
+    tags=["RL Agent"],
+)
+def train_agent(request: TrainingRequest) -> TrainingResponse:
+    agent = get_agent()
+    result = agent.train(total_timesteps=request.total_timesteps)
+    return TrainingResponse(**result)
