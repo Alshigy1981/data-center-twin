@@ -1054,7 +1054,7 @@ if events_list:
     available = [c for c in display_cols if c in df_events.columns]
     df_show = df_events[available].fillna("—")
 
-    styled = df_show.style.applymap(color_severity, subset=["severity"] if "severity" in available else [])
+    styled = df_show.style.map(color_severity, subset=["severity"] if "severity" in available else [])
     st.dataframe(
         styled,
         use_container_width=True,
