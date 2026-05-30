@@ -13,3 +13,4 @@ build/warn-*.txt
 build/xref-*.html
 .pytest_cache/
 .DS_Store
+.claude/
