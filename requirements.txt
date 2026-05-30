@@ -16,8 +16,8 @@ numpy>=1.24.0,<2.0.0
 scipy>=1.11.0
 httpx>=0.24.0
 
-# Multi-objective optimizer
-# scipy is already listed above; no additional packages needed
+# Multi-objective optimizer + workload placement MILP
+pulp>=2.7.0          # MILP solver for rack assignment (Layer 3)
 
 # Reinforcement learning
 # NOTE: PyTorch does not publish macOS wheels to the CPU-only index.
