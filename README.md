@@ -98,9 +98,34 @@ uvicorn backend.main:app --reload --port 8000
 # Terminal 2 — start dashboard
 streamlit run dashboard/app.py --server.port 8501
 
-# Terminal 3 — run tests (133 tests)
+# Terminal 3 — run tests (233 tests)
 pytest tests/ -v
 ```
+
+## Starting and Stopping the App
+
+The API and dashboard are independent processes — **both must be running** for the dashboard to display live data. They do not auto-restart; you need to start them each session.
+
+```bash
+cd ~/data_center_twin
+source .venv/bin/activate
+
+# Terminal 1 — FastAPI backend (required first)
+uvicorn backend.main:app --port 8000
+
+# Terminal 2 — Streamlit dashboard
+streamlit run dashboard/app.py --server.port 8501
+```
+
+| Service | URL |
+|---|---|
+| Dashboard | http://localhost:8501 |
+| API (Swagger docs) | http://localhost:8000/docs |
+| API (ReDoc) | http://localhost:8000/redoc |
+
+To stop either server: press `Ctrl-C` in its terminal, or run `kill $(lsof -ti:8000 -ti:8501)`.
+
+> **If the dashboard shows "This site can't be reached":** the servers are not running. Run the two commands above.
 
 ## Environment Variables
 
