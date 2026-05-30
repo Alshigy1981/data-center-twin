@@ -22,7 +22,14 @@
       "Bash(pip config *)",
       "Bash(curl -s -I \"https://files.pythonhosted.org/packages/\")",
       "Bash(MACOSX_DEPLOYMENT_TARGET=13.0 pip install torch --quiet)",
-      "Bash(_PYTHON_HOST_PLATFORM=macosx-13.0-x86_64 pip install torch --quiet)"
+      "Bash(_PYTHON_HOST_PLATFORM=macosx-13.0-x86_64 pip install torch --quiet)",
+      "Bash(brew list *)",
+      "Bash(pip --version)",
+      "Bash(python3.11 --version)",
+      "Bash(python3.11 -m venv /Users/mohammedmohammed/data_center_twin/.venv)",
+      "Bash(/Users/mohammedmohammed/data_center_twin/.venv/bin/pip install *)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/python *)"
     ]
   }
 }
