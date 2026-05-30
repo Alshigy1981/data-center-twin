@@ -1160,6 +1160,431 @@ with st.expander("🔬  What-If Simulation Results", expanded="whatif_result" in
         )
 
 # ─────────────────────────────────────────
+# OPTIMIZATION COMMAND CENTER (LAYERS 3 & 4)
+# ─────────────────────────────────────────
+
+def _api_safe(endpoint: str, fallback=None):
+    """Return fallback on any API error — dashboard must never crash."""
+    try:
+        result = fetch(endpoint)
+        return result if result is not None else fallback
+    except Exception:
+        return fallback
+
+
+st.markdown("---")
+section_header("OPTIMIZATION COMMAND CENTER (LAYERS 3 & 4)", "⚡")
+
+# ── Panel 1: Command Center KPIs ──────────────────────────────────────────────
+
+section_header("Live Energy & Optimization KPIs", "📊")
+
+rate_data = _api_safe("/optimizer/energy/rate/current", {})
+demand_data = _api_safe("/optimizer/energy/demand/current", {})
+bill_data = _api_safe("/optimizer/energy/bill/current-month", {})
+conflicts_data = _api_safe("/optimizer/conflicts", [])
+savings_data = _api_safe("/optimizer/savings/summary", {})
+
+kpi_col1, kpi_col2, kpi_col3, kpi_col4, kpi_col5 = st.columns(5)
+
+with kpi_col1:
+    rate_val = rate_data.get("rate_per_kwh", 0.0) if rate_data else 0.0
+    period = rate_data.get("period_type", "—") if rate_data else "—"
+    accent = "red" if period == "on_peak" else ("amber" if period == "shoulder" else "green")
+    st.markdown(
+        kpi_card("Current Rate", f"${rate_val:.3f}/kWh", sub=period.replace("_", " ").title(), accent=accent),
+        unsafe_allow_html=True,
+    )
+
+with kpi_col2:
+    demand_kw = demand_data.get("rolling_15min_kw", 0.0) if demand_data else 0.0
+    util_pct = demand_data.get("utilization_pct", 0.0) if demand_data else 0.0
+    d_accent = "red" if util_pct > 90 else ("amber" if util_pct > 75 else "")
+    st.markdown(
+        kpi_card("15-Min Demand", f"{demand_kw:.0f} kW", sub=f"{util_pct:.0f}% of threshold", accent=d_accent),
+        unsafe_allow_html=True,
+    )
+
+with kpi_col3:
+    proj_total = bill_data.get("projected_total", 0.0) if bill_data else 0.0
+    days_rem = bill_data.get("days_remaining", 0) if bill_data else 0
+    st.markdown(
+        kpi_card("Projected Bill", f"${proj_total:,.0f}", sub=f"{days_rem} days remaining", accent="purple"),
+        unsafe_allow_html=True,
+    )
+
+with kpi_col4:
+    n_conflicts = len(conflicts_data) if conflicts_data else 0
+    c_accent = "red" if n_conflicts > 0 else "green"
+    c_val = f"{n_conflicts} Active" if n_conflicts > 0 else "None"
+    st.markdown(
+        kpi_card("Opt. Conflicts", c_val, sub="Layer conflicts detected", accent=c_accent),
+        unsafe_allow_html=True,
+    )
+
+with kpi_col5:
+    annual_est = savings_data.get("total_annual_estimate", 0.0) if savings_data else 0.0
+    st.markdown(
+        kpi_card("Est. Annual Savings", f"${annual_est:,.0f}", sub="All optimization layers", accent="green"),
+        unsafe_allow_html=True,
+    )
+
+# ── Panel 2: Workload Placement Advisor ───────────────────────────────────────
+
+section_header("Workload Placement Advisor", "🖥")
+
+pl_col1, pl_col2 = st.columns([1, 3])
+with pl_col1:
+    workload_kw_input = st.number_input(
+        "Workload Power (kW)", min_value=0.5, max_value=20.0, value=5.0, step=0.5
+    )
+    run_placement = st.button("Find Best Rack", use_container_width=True)
+
+with pl_col2:
+    if run_placement:
+        pl_result = _api_safe(f"/optimizer/placement/recommend?workload_kw={workload_kw_input}", {})
+        pl_scores = _api_safe(f"/optimizer/placement/scores?workload_kw={workload_kw_input}", [])
+
+        if pl_result and pl_result.get("recommended_rack_id"):
+            rack_id = pl_result["recommended_rack_id"]
+            thermal = pl_result.get("thermal_risk_score", 0)
+            inlet = pl_result.get("projected_inlet_temp", 0)
+            ashrae = pl_result.get("ashrae_class", "A1")
+
+            accent_cls = "green" if thermal < 0.3 else ("amber" if thermal < 0.8 else "red")
+            st.markdown(
+                f'<div class="kpi-card {accent_cls}">'
+                f'<div class="kpi-label">Recommended Rack</div>'
+                f'<div class="kpi-value">{rack_id}</div>'
+                f'<div class="kpi-sub">Thermal risk: {thermal:.3f} | Inlet: {inlet:.1f}°C | ASHRAE: {ashrae}</div>'
+                f'<div class="kpi-sub">{pl_result.get("rationale", "")}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            if pl_scores:
+                df_scores = pd.DataFrame(pl_scores)
+                if not df_scores.empty:
+                    cols_to_show = [c for c in ["rack_id", "overall_score", "thermal_risk", "pue_impact", "stranded_loss", "feasible"] if c in df_scores.columns]
+                    st.dataframe(df_scores[cols_to_show].head(20), use_container_width=True, height=220)
+        elif pl_result is not None:
+            st.warning("No feasible rack found for this workload.")
+        else:
+            st.info("Backend not available — start the API server first.")
+    else:
+        st.info("Enter workload size and click 'Find Best Rack' to get a placement recommendation.")
+
+# ── Panel 3: Rack Migration Recommender ───────────────────────────────────────
+
+section_header("Rack Migration Recommender", "🔄")
+
+migrations = _api_safe("/optimizer/placement/migrations", [])
+if migrations:
+    risk_colors = {"LOW": "#00cc88", "MEDIUM": "#ffaa00", "HIGH": "#ff4444"}
+    for mig in migrations[:5]:
+        risk = mig.get("migration_risk", "MEDIUM")
+        rcolor = risk_colors.get(risk, "#7090b0")
+        st.markdown(
+            f'<div class="rec-card">'
+            f'<span class="priority-badge" style="background:{rcolor};color:#fff">{risk}</span>'
+            f'<b>{mig["source_rack_id"]}</b> → <b>{mig["destination_rack_id"]}</b>'
+            f'<div class="rec-action">Benefit: {mig.get("benefit_score", 0):.3f} | '
+            f'Thermal improvement: {mig.get("thermal_improvement_c", 0):.1f}°C | '
+            f'Est. cooling savings: {mig.get("estimated_savings_kw", 0):.1f} kW</div>'
+            f'<div class="rec-rationale">{mig.get("rationale", "")} | '
+            f'Downtime: ~{mig.get("downtime_estimate_mins", 0)} min</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+else:
+    st.markdown(
+        '<div style="color:#00cc88;font-size:0.85rem;padding:12px;background:#0a1f10;'
+        'border:1px solid #1a3020;border-radius:5px;">'
+        "All racks within thermal and power thresholds — no migrations recommended."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+# ── Panel 4: Energy Cost Timeline ─────────────────────────────────────────────
+
+section_header("Energy Cost Timeline & Load Schedule", "💰")
+
+rate_forecast = _api_safe("/optimizer/energy/rate/forecast", [])
+schedule_result = _api_safe("/optimizer/energy/schedule", {})
+
+en_col1, en_col2 = st.columns(2)
+
+with en_col1:
+    if rate_forecast:
+        df_rates = pd.DataFrame(rate_forecast)
+        colors_map = {"on_peak": "#ff4444", "shoulder": "#ffaa00", "off_peak": "#00cc88"}
+        bar_colors = [colors_map.get(p, "#7090b0") for p in df_rates.get("period_type", [])]
+        fig_rates = go.Figure()
+        fig_rates.add_trace(go.Bar(
+            x=df_rates["hour"],
+            y=df_rates["rate_per_kwh"],
+            marker_color=bar_colors,
+            name="$/kWh",
+            hovertemplate="Hour %{x}<br>$%{y:.3f}/kWh<extra></extra>",
+        ))
+        apply_dark_layout(fig_rates, "24h Rate Forecast ($/kWh)")
+        fig_rates.update_layout(height=220, yaxis_title="$/kWh", showlegend=False)
+        st.plotly_chart(fig_rates, use_container_width=True)
+    else:
+        st.info("Rate forecast unavailable.")
+
+with en_col2:
+    if schedule_result:
+        loads = schedule_result.get("loads", [])
+        total_saving = schedule_result.get("total_saving_vs_asap", 0)
+        carbon_saved = schedule_result.get("carbon_saved_kg", 0)
+        st.markdown(
+            f'<div class="kpi-card green">'
+            f'<div class="kpi-label">Schedule Savings</div>'
+            f'<div class="kpi-value">${total_saving:.2f}</div>'
+            f'<div class="kpi-sub">Carbon saved: {carbon_saved:.2f} kg | {len(loads)} loads scheduled</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+        if loads:
+            df_loads = pd.DataFrame(loads)
+            if not df_loads.empty:
+                cols_show = [c for c in ["load_name", "power_kw", "cost_saving", "start_time"] if c in df_loads.columns]
+                st.dataframe(df_loads[cols_show], use_container_width=True, height=160)
+    else:
+        st.info("Schedule data unavailable.")
+
+# ── Panel 5: Pre-Cooling Strategy ─────────────────────────────────────────────
+
+section_header("Pre-Cooling Strategy", "❄")
+
+precooling = _api_safe("/optimizer/energy/precooling", {})
+if precooling:
+    actions_list = precooling.get("actions", [])
+    total_saving_pc = precooling.get("total_cost_saving", 0)
+    peak_reduction = precooling.get("peak_load_reduction_kw", 0)
+
+    pc_col1, pc_col2, pc_col3 = st.columns(3)
+    with pc_col1:
+        st.markdown(kpi_card("Cost Saving", f"${total_saving_pc:.2f}", sub="24h pre-cooling benefit", accent="green"), unsafe_allow_html=True)
+    with pc_col2:
+        st.markdown(kpi_card("Peak Reduced", f"{peak_reduction:.0f} kW", sub="via thermal coasting", accent="amber"), unsafe_allow_html=True)
+    with pc_col3:
+        pre_n = sum(1 for a in actions_list if a.get("action_type") == "pre_cool")
+        coast_n = sum(1 for a in actions_list if a.get("action_type") == "coast")
+        st.markdown(kpi_card("Actions", f"{pre_n} pre-cool / {coast_n} coast", sub="next 24h"), unsafe_allow_html=True)
+
+    if actions_list:
+        df_pc = pd.DataFrame(actions_list)
+        action_colors_pc = {"pre_cool": "#00aaff", "coast": "#ffaa00", "normal": "#2a4060"}
+        bar_pc = [action_colors_pc.get(a, "#2a4060") for a in df_pc.get("action_type", [])]
+        fig_pc = go.Figure()
+        fig_pc.add_trace(go.Bar(
+            x=df_pc["hour"], y=df_pc["chw_setpoint"],
+            name="CHW Setpoint", marker_color=bar_pc,
+            hovertemplate="Hour %{x}<br>CHW: %{y:.1f}°C<extra></extra>",
+        ))
+        apply_dark_layout(fig_pc, "CHW Setpoint Schedule (°C)")
+        fig_pc.update_layout(height=200, yaxis_title="°C", showlegend=False)
+        st.plotly_chart(fig_pc, use_container_width=True)
+else:
+    st.info("Pre-cooling schedule unavailable.")
+
+# ── Panel 6: Demand Charge Tracker ────────────────────────────────────────────
+
+section_header("Demand Charge Tracker", "⚡")
+
+demand_status = _api_safe("/optimizer/energy/demand/current", {})
+bill_proj = _api_safe("/optimizer/energy/bill/current-month", {})
+
+dc_col1, dc_col2, dc_col3, dc_col4 = st.columns(4)
+with dc_col1:
+    rolling_kw = demand_status.get("rolling_15min_kw", 0.0) if demand_status else 0.0
+    util = demand_status.get("utilization_pct", 0.0) if demand_status else 0.0
+    d_acc = "red" if util > 90 else ("amber" if util > 75 else "")
+    st.markdown(kpi_card("15-Min Demand", f"{rolling_kw:.0f} kW", sub=f"{util:.0f}% utilization", accent=d_acc), unsafe_allow_html=True)
+with dc_col2:
+    mpeak = demand_status.get("monthly_peak_kw", 0.0) if demand_status else 0.0
+    st.markdown(kpi_card("Monthly Peak", f"{mpeak:.0f} kW", sub="Rolling max demand"), unsafe_allow_html=True)
+with dc_col3:
+    demand_chg = demand_status.get("demand_charge_to_date", 0.0) if demand_status else 0.0
+    st.markdown(kpi_card("Demand Charge", f"${demand_chg:,.0f}", sub="Month-to-date", accent="amber"), unsafe_allow_html=True)
+with dc_col4:
+    ratchet = bill_proj.get("ratchet_risk", False) if bill_proj else False
+    ratchet_amt = bill_proj.get("ratchet_amount", 0.0) if bill_proj else 0.0
+    r_acc = "red" if ratchet else "green"
+    r_val = f"${ratchet_amt:,.0f} risk" if ratchet else "Clear"
+    st.markdown(kpi_card("Ratchet Clause", r_val, sub="85% of 12mo peak", accent=r_acc), unsafe_allow_html=True)
+
+if bill_proj:
+    bp_col1, bp_col2 = st.columns(2)
+    with bp_col1:
+        fig_bill = go.Figure(go.Bar(
+            x=["Energy", "Demand Charge", "Facilities"],
+            y=[bill_proj.get("projected_energy_cost", 0), bill_proj.get("projected_demand_charge", 0), 850.0],
+            marker_color=["#00aaff", "#ff4444", "#7090b0"],
+        ))
+        apply_dark_layout(fig_bill, "Projected Monthly Bill Breakdown")
+        fig_bill.update_layout(height=200, yaxis_title="$", showlegend=False)
+        st.plotly_chart(fig_bill, use_container_width=True)
+    with bp_col2:
+        savings_av = bill_proj.get("savings_available", 0)
+        proj_total_bill = bill_proj.get("projected_total", 0)
+        st.markdown(
+            f'<div class="kpi-card green">'
+            f'<div class="kpi-label">Scheduling Savings Available</div>'
+            f'<div class="kpi-value">${savings_av:,.0f}</div>'
+            f'<div class="kpi-sub">Out of ${proj_total_bill:,.0f} projected total</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+# ── Panel 7: Grid Carbon & Price Signal ───────────────────────────────────────
+
+section_header("Grid Carbon & Price Signal", "🌱")
+
+if rate_forecast:
+    df_r2 = pd.DataFrame(rate_forecast)
+    fig_dual = make_subplots(specs=[[{"secondary_y": True}]])
+    fig_dual.add_trace(
+        go.Scatter(x=df_r2["hour"], y=df_r2["rate_per_kwh"],
+                   name="Rate ($/kWh)", line=dict(color="#ffaa00", width=2), mode="lines"),
+        secondary_y=False,
+    )
+    fig_dual.add_trace(
+        go.Scatter(x=df_r2["hour"], y=df_r2["carbon_intensity"],
+                   name="Carbon (kgCO₂/kWh)", line=dict(color="#00cc88", width=2, dash="dot"), mode="lines"),
+        secondary_y=True,
+    )
+    fig_dual.update_layout(
+        **PLOTLY_DARK, height=240,
+        title=dict(text="24h Rate & Carbon Intensity", font=dict(size=13, color="#c0d8f0")),
+    )
+    fig_dual.update_yaxes(title_text="$/kWh", secondary_y=False, gridcolor="#1a3050", linecolor="#1a3050")
+    fig_dual.update_yaxes(title_text="kgCO₂/kWh", secondary_y=True, gridcolor="#1a3050", linecolor="#1a3050")
+    st.plotly_chart(fig_dual, use_container_width=True)
+
+    grid_peaks = [h for h in rate_forecast if h.get("is_grid_peak", False)]
+    if grid_peaks:
+        st.warning(f"Grid peak events active in {len(grid_peaks)} hours today — coordinate with utility.")
+    else:
+        st.success("No grid peak events today.")
+
+# ── Panel 8: 4-Objective Pareto Front Explorer ────────────────────────────────
+
+section_header("4-Objective Pareto Front Explorer", "🎯")
+
+pareto_data = _api_safe("/optimizer/pareto", {})
+if pareto_data and pareto_data.get("pareto_points"):
+    pareto_pts = pareto_data["pareto_points"]
+    all_pts = pareto_data.get("points", [])
+    current_pt = pareto_data.get("current_point", {})
+    rec_pt = pareto_data.get("recommended_point", {})
+
+    fig_pareto = go.Figure()
+    if all_pts:
+        fig_pareto.add_trace(go.Scatter(
+            x=[p["pue"] for p in all_pts],
+            y=[p["energy_cost_per_hr"] for p in all_pts],
+            mode="markers", marker=dict(color="#1a3050", size=4, opacity=0.5),
+            name="Sampled Points",
+            hovertemplate="PUE: %{x:.3f}<br>Cost/hr: $%{y:.2f}<extra></extra>",
+        ))
+    fig_pareto.add_trace(go.Scatter(
+        x=[p["pue"] for p in pareto_pts],
+        y=[p["energy_cost_per_hr"] for p in pareto_pts],
+        mode="lines+markers", line=dict(color="#00aaff", width=2),
+        marker=dict(color="#00aaff", size=7), name="Pareto Front",
+        hovertemplate="PUE: %{x:.3f}<br>Cost/hr: $%{y:.2f}<extra></extra>",
+    ))
+    if current_pt:
+        fig_pareto.add_trace(go.Scatter(
+            x=[current_pt.get("pue", 0)], y=[current_pt.get("energy_cost_per_hr", 0)],
+            mode="markers", marker=dict(color="#ff4444", size=12, symbol="x"), name="Current",
+        ))
+    if rec_pt:
+        fig_pareto.add_trace(go.Scatter(
+            x=[rec_pt.get("pue", 0)], y=[rec_pt.get("energy_cost_per_hr", 0)],
+            mode="markers", marker=dict(color="#00cc88", size=12, symbol="star"), name="Recommended",
+        ))
+    apply_dark_layout(fig_pareto, "PUE vs Energy Cost Pareto Front (200 sampled operating points)")
+    fig_pareto.update_layout(height=300, xaxis_title="PUE", yaxis_title="Energy Cost ($/hr)")
+    st.plotly_chart(fig_pareto, use_container_width=True)
+
+    if rec_pt:
+        st.markdown(
+            f'<div class="kpi-card green">'
+            f'<div class="kpi-label">Recommended Operating Point</div>'
+            f'<div class="kpi-value">PUE {rec_pt.get("pue", 0):.3f}</div>'
+            f'<div class="kpi-sub">'
+            f'CHW: {rec_pt.get("chw_setpoint", 0):.1f}°C | '
+            f'CRAC: {rec_pt.get("crac_setpoint", 0):.1f}°C | '
+            f'Cost: ${rec_pt.get("energy_cost_per_hr", 0):.2f}/hr | '
+            f'Carbon: {rec_pt.get("carbon_kg_hr", 0):.1f} kg/hr'
+            f'</div></div>',
+            unsafe_allow_html=True,
+        )
+else:
+    st.info("Pareto analysis unavailable — start the API server to enable.")
+
+# ── Panel 9: Conflict Resolution Log ──────────────────────────────────────────
+
+section_header("Optimization Conflict Resolution", "⚖")
+
+conflicts_list = _api_safe("/optimizer/conflicts", [])
+unified = _api_safe("/optimizer/unified", {})
+
+if conflicts_list:
+    st.warning(f"{len(conflicts_list)} conflict(s) detected between optimization layers:")
+    type_colors = {
+        "COOLING_VS_ENERGY": "#ffaa00",
+        "THERMAL_VS_COST": "#ff4444",
+        "MAINTENANCE_VS_DEMAND": "#aa66ff",
+        "PLACEMENT_VS_SCHEDULING": "#00aaff",
+    }
+    for c in conflicts_list:
+        ctype = c.get("conflict_type", "UNKNOWN")
+        ccolor = type_colors.get(ctype, "#7090b0")
+        st.markdown(
+            f'<div class="alert-row" style="border-left-color:{ccolor}">'
+            f'  <div class="alert-content">'
+            f'    <div class="alert-message">{ctype}: {c.get("description", "")[:140]}</div>'
+            f'    <div class="alert-meta">'
+            f'      {c.get("layer_a", "")} vs {c.get("layer_b", "")} | '
+            f'      Resolution: {c.get("resolution", "")[:100]}'
+            f'    </div>'
+            f'    <div class="alert-meta" style="color:#00cc88">Winner: {c.get("winner", "—")}</div>'
+            f'  </div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+else:
+    st.markdown(
+        '<div style="color:#00cc88;font-size:0.85rem;padding:12px;background:#0a1f10;'
+        'border:1px solid #1a3020;border-radius:5px;">'
+        "No conflicts between optimization layers — all systems aligned."
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+if unified:
+    priority_order = unified.get("priority_order", [])
+    est_savings = unified.get("estimated_savings", {})
+    if priority_order:
+        st.markdown("**Execution Priority Order:**")
+        for i, step in enumerate(priority_order, 1):
+            st.markdown(f"  {i}. {step}")
+    if est_savings:
+        s_col1, s_col2, s_col3 = st.columns(3)
+        with s_col1:
+            st.markdown(kpi_card("Daily Energy Savings", f"${est_savings.get('energy_cost_per_day', 0):.2f}", accent="green"), unsafe_allow_html=True)
+        with s_col2:
+            st.markdown(kpi_card("Monthly Demand Savings", f"${est_savings.get('demand_charge_per_month', 0):.2f}", accent="green"), unsafe_allow_html=True)
+        with s_col3:
+            pue_imp = est_savings.get("pue_improvement", 0)
+            st.markdown(kpi_card("PUE Improvement", f"{pue_imp:.4f}", sub="From cooling optimizer", accent="green"), unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────
 # 10. FOOTER
 # ─────────────────────────────────────────
 

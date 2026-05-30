@@ -410,6 +410,206 @@ class TrainingResponse(BaseModel):
 
 
 # ─────────────────────────────────────────
+# Workload Placement Models
+# ─────────────────────────────────────────
+
+class RackScore(BaseModel):
+    """Placement score for a single rack."""
+    rack_id: str
+    overall_score: float
+    thermal_risk: float
+    pue_impact: float
+    stranded_loss: float
+    phase_impact: float
+    feasible: bool
+    infeasibility_reason: Optional[str] = None
+
+
+class PlacementRecommendation(BaseModel):
+    """Optimal rack assignment recommendation for a new workload."""
+    recommended_rack_id: Optional[str]
+    workload_kw: float
+    thermal_risk_score: float
+    projected_inlet_temp: float
+    projected_outlet_temp: float
+    ashrae_class: str
+    pue_impact: float
+    phase_impact: float
+    overall_score: float
+    rationale: str
+    alternatives: List[RackScore] = Field(default_factory=list)
+    feasible: bool = True
+
+
+class MigrationRecommendation(BaseModel):
+    """Workload migration opportunity between two racks."""
+    source_rack_id: str
+    destination_rack_id: str
+    benefit_score: float
+    thermal_improvement_c: float
+    pue_improvement: float
+    estimated_savings_kw: float
+    migration_risk: str
+    downtime_estimate_mins: int
+    rationale: str
+
+
+class ThermalPreview(BaseModel):
+    """Before/after thermal projection for placing a workload on a specific rack."""
+    rack_id: str
+    workload_kw: float
+    before_inlet_c: float
+    before_outlet_c: float
+    before_ashrae_class: str
+    after_inlet_c: float
+    after_outlet_c: float
+    after_ashrae_class: str
+    thermal_risk_score: float
+    risk_level: str
+
+
+# ─────────────────────────────────────────
+# Energy Pricing Models
+# ─────────────────────────────────────────
+
+class HourlyRate(BaseModel):
+    """Single hour in the 24-hour rate forecast."""
+    hour: int
+    dt_iso: str
+    rate_per_kwh: float
+    period_type: str
+    carbon_intensity: float
+    is_grid_peak: bool
+
+
+class BillBreakdown(BaseModel):
+    """Monthly electricity bill broken into components."""
+    energy_cost: float
+    demand_charge: float
+    coincident_peak_charge: float
+    facilities_charge: float
+    ratchet_adjustment: float
+    total: float
+    month: str
+
+
+class ScheduledLoad(BaseModel):
+    """A deferrable load assigned to an optimal time window."""
+    load_name: str
+    load_type: str
+    start_time: str
+    end_time: str
+    power_kw: float
+    energy_cost: float
+    cost_vs_immediate: float
+    cost_saving: float
+
+
+class OptimalSchedule(BaseModel):
+    """Full schedule of all deferrable loads with savings summary."""
+    loads: List[ScheduledLoad] = Field(default_factory=list)
+    total_cost: float
+    total_saving_vs_asap: float
+    peak_demand_avoided_kw: float
+    carbon_saved_kg: float
+    schedule_horizon_hrs: int = 24
+
+
+class MonthlyBillProjection(BaseModel):
+    """Projected electricity bill for the current month."""
+    projected_energy_cost: float
+    projected_demand_charge: float
+    projected_total: float
+    savings_available: float
+    ratchet_risk: bool
+    ratchet_amount: float
+    days_remaining: int
+    current_month_peak_kw: float
+
+
+class PreCoolingAction(BaseModel):
+    """Single pre-cooling / coast action in the 24-hour schedule."""
+    hour: int
+    dt_iso: str
+    chw_setpoint: float
+    crac_setpoint: float
+    action_type: str
+    expected_cost_saving: float
+
+
+class PreCoolingSchedule(BaseModel):
+    """Full pre-cooling strategy with expected savings."""
+    actions: List[PreCoolingAction] = Field(default_factory=list)
+    total_cost_saving: float
+    peak_load_reduction_kw: float
+    start_time: str
+    end_time: str
+
+
+class DemandStatus(BaseModel):
+    """Real-time demand charge status."""
+    rolling_15min_kw: float
+    monthly_peak_kw: float
+    demand_charge_to_date: float
+    ratchet_risk: bool
+    projected_demand_charge: float
+    threshold_kw: float
+    utilization_pct: float
+
+
+# ─────────────────────────────────────────
+# Optimization Coordinator Models
+# ─────────────────────────────────────────
+
+class OptimizationConflict(BaseModel):
+    """Detected conflict between two optimization layers."""
+    conflict_type: str
+    layer_a: str
+    layer_b: str
+    description: str
+    resolution: str
+    winner: str
+
+
+class UnifiedOptimizationPlan(BaseModel):
+    """Unified recommendation from all four optimization layers."""
+    cooling_actions: List[Dict[str, Any]] = Field(default_factory=list)
+    placement_actions: List[Dict[str, Any]] = Field(default_factory=list)
+    schedule_actions: List[Dict[str, Any]] = Field(default_factory=list)
+    maintenance_actions: List[Dict[str, Any]] = Field(default_factory=list)
+    conflicts_detected: List[OptimizationConflict] = Field(default_factory=list)
+    estimated_savings: Dict[str, float] = Field(default_factory=dict)
+    priority_order: List[str] = Field(default_factory=list)
+    generated_at: datetime
+
+
+class ParetoFrontData(BaseModel):
+    """4-objective Pareto front: PUE, energy cost, reliability, carbon."""
+    points: List[Dict[str, Any]] = Field(default_factory=list)
+    pareto_points: List[Dict[str, Any]] = Field(default_factory=list)
+    current_point: Dict[str, Any] = Field(default_factory=dict)
+    recommended_point: Dict[str, Any] = Field(default_factory=dict)
+    objectives: List[str] = Field(default_factory=list)
+
+
+class PlacementWeightsRequest(BaseModel):
+    """Request to update workload placement objective weights."""
+    w1: float = Field(..., ge=0.0, le=1.0, description="Thermal risk weight")
+    w2: float = Field(..., ge=0.0, le=1.0, description="PUE impact weight")
+    w3: float = Field(..., ge=0.0, le=1.0, description="Stranded capacity weight")
+    w4: float = Field(..., ge=0.0, le=1.0, description="Phase imbalance weight")
+
+
+class SavingsSummary(BaseModel):
+    """Estimated savings across all four optimization layers."""
+    energy_cost_saving_per_day: float
+    demand_charge_saving_per_month: float
+    pue_improvement: float
+    carbon_saving_kg_per_day: float
+    total_annual_estimate: float
+
+
+# ─────────────────────────────────────────
 # Health Check Model
 # ─────────────────────────────────────────
 

@@ -162,6 +162,77 @@ class EventDB(Base):
     confidence = Column(Integer, nullable=True)
 
 
+class PlacementDecisionDB(Base):
+    """Audit log of workload placement recommendations."""
+    __tablename__ = "placement_decisions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    workload_kw = Column(Float, nullable=False)
+    recommended_rack_id = Column(String, nullable=True)
+    thermal_risk_score = Column(Float, nullable=False, default=0.0)
+    pue_impact = Column(Float, nullable=False, default=0.0)
+    overall_score = Column(Float, nullable=False, default=0.0)
+    was_accepted = Column(Boolean, nullable=True)
+
+
+class EnergyScheduleDB(Base):
+    """Deferrable load schedule entries."""
+    __tablename__ = "energy_schedule"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    load_name = Column(String, nullable=False)
+    load_type = Column(String, nullable=False)
+    scheduled_start = Column(DateTime, nullable=False)
+    scheduled_end = Column(DateTime, nullable=False)
+    power_kw = Column(Float, nullable=False)
+    cost_saving = Column(Float, nullable=False, default=0.0)
+    status = Column(String, nullable=False, default="pending")
+    created_at = Column(DateTime, nullable=False)
+
+
+class DemandPeakDB(Base):
+    """15-minute demand peak readings for ratchet tracking."""
+    __tablename__ = "demand_peaks"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    demand_kw = Column(Float, nullable=False)
+    period_type = Column(String, nullable=False)
+    is_monthly_peak = Column(Boolean, nullable=False, default=False)
+    month_year = Column(String, nullable=False)
+
+
+class MonthlyBillDB(Base):
+    """Monthly electricity bill records."""
+    __tablename__ = "monthly_bills"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    month_year = Column(String, nullable=False, unique=True)
+    energy_cost = Column(Float, nullable=False)
+    demand_charge = Column(Float, nullable=False)
+    coincident_charge = Column(Float, nullable=False)
+    facilities_charge = Column(Float, nullable=False)
+    ratchet_adjustment = Column(Float, nullable=False, default=0.0)
+    total = Column(Float, nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+
+class OptimizationConflictDB(Base):
+    """Audit log of detected and resolved optimization layer conflicts."""
+    __tablename__ = "optimization_conflicts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    timestamp = Column(DateTime, nullable=False, index=True)
+    conflict_type = Column(String, nullable=False)
+    layer_a = Column(String, nullable=False)
+    layer_b = Column(String, nullable=False)
+    description = Column(Text, nullable=False)
+    resolution = Column(Text, nullable=False)
+    winner = Column(String, nullable=False)
+    resolved_at = Column(DateTime, nullable=True)
+
+
 # Additional composite indexes for common query patterns
 Index("ix_telemetry_asset_cycle", TelemetryDB.asset_id, TelemetryDB.cycle_id)
 Index("ix_alerts_active", AlertDB.is_active, AlertDB.severity)

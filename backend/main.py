@@ -49,6 +49,22 @@ from backend.models import (
     AssetInventory,
     AssetRiskEntry,
     BindingConstraint,
+    DemandStatus,
+    HourlyRate,
+    MigrationRecommendation,
+    MonthlyBillProjection,
+    OptimalSchedule,
+    OptimizationConflict,
+    ParetoFrontData,
+    PlacementRecommendation,
+    PlacementWeightsRequest,
+    PreCoolingAction,
+    PreCoolingSchedule,
+    RackScore,
+    SavingsSummary,
+    ScheduledLoad,
+    ThermalPreview,
+    UnifiedOptimizationPlan,
     CarbonMetrics,
     ChillerAsset,
     ChillerTelemetry,
@@ -81,6 +97,10 @@ from backend.models import (
 from backend.optimizer import compute_pareto_front, optimize_setpoints
 from backend.rl_agent import get_agent
 from backend.simulator import build_asset_inventory, get_last_snapshot, start_simulation
+from backend.workload_placement import placement_optimizer
+from backend.energy_scheduler import scheduler as energy_scheduler, DEFAULT_LOADS
+from backend.grid_pricing import tariff
+from backend.optimization_coordinator import coordinator
 
 load_dotenv()
 
@@ -673,3 +693,224 @@ def train_agent(request: TrainingRequest) -> TrainingResponse:
     agent = get_agent()
     result = agent.train(total_timesteps=request.total_timesteps)
     return TrainingResponse(**result)
+
+
+# ─────────────────────────────────────────
+# Layer 3 — Workload Placement Endpoints
+# ─────────────────────────────────────────
+
+@app.get("/optimizer/placement/recommend", response_model=PlacementRecommendation, tags=["Optimization"])
+def placement_recommend(workload_kw: float = Query(..., ge=0.5, le=20.0, description="Workload size in kW")):
+    """Find optimal rack assignment for a new workload using MILP."""
+    snap = get_last_snapshot()
+    if not snap or not snap.racks:
+        raise HTTPException(503, "No telemetry available.")
+    result = placement_optimizer.recommend_placement(workload_kw, snap)
+    return PlacementRecommendation(
+        recommended_rack_id=result.get("recommended_rack_id"),
+        workload_kw=workload_kw,
+        thermal_risk_score=result.get("thermal_risk_score", 0.0),
+        projected_inlet_temp=result.get("projected_inlet_temp", 0.0),
+        projected_outlet_temp=result.get("projected_outlet_temp", 0.0),
+        ashrae_class=result.get("ashrae_class", "A1"),
+        pue_impact=result.get("pue_impact", 0.0),
+        phase_impact=result.get("phase_impact", 0.0),
+        overall_score=result.get("overall_score", 0.0),
+        rationale=result.get("rationale", ""),
+        feasible=result.get("recommended_rack_id") is not None,
+        alternatives=[RackScore(**a) for a in result.get("alternatives", [])],
+    )
+
+
+@app.get("/optimizer/placement/scores", response_model=List[RackScore], tags=["Optimization"])
+def placement_scores(workload_kw: float = Query(..., ge=0.5, le=20.0, description="Workload size in kW")):
+    """Score all 80 racks for a given workload size."""
+    snap = get_last_snapshot()
+    if not snap or not snap.racks:
+        raise HTTPException(503, "No telemetry available.")
+    return [RackScore(**s) for s in placement_optimizer.score_all_racks(workload_kw, snap)]
+
+
+@app.get("/optimizer/placement/migrations", response_model=List[MigrationRecommendation], tags=["Optimization"])
+def placement_migrations():
+    """Identify the top 5 workload migration opportunities from hot to cool racks."""
+    snap = get_last_snapshot()
+    if not snap or not snap.racks:
+        raise HTTPException(503, "No telemetry available.")
+    return [MigrationRecommendation(**m) for m in placement_optimizer.find_migration_candidates(snap)]
+
+
+@app.get("/optimizer/placement/preview/{rack_id}", response_model=ThermalPreview, tags=["Optimization"])
+def placement_preview(rack_id: str, workload_kw: float = Query(..., ge=0.5, le=20.0)):
+    """Show before/after thermal projection for placing a workload on a specific rack."""
+    snap = get_last_snapshot()
+    if not snap or not snap.racks:
+        raise HTTPException(503, "No telemetry available.")
+    preview = placement_optimizer.get_thermal_preview(rack_id, workload_kw, snap)
+    if not preview:
+        raise HTTPException(404, f"Rack {rack_id} not found.")
+    return ThermalPreview(**preview)
+
+
+@app.post("/optimizer/placement/weights", tags=["Optimization"])
+def placement_weights(req: PlacementWeightsRequest):
+    """Update placement objective weights (must sum to 1.0)."""
+    total = req.w1 + req.w2 + req.w3 + req.w4
+    if abs(total - 1.0) > 0.01:
+        raise HTTPException(422, f"Weights must sum to 1.0, got {total:.3f}")
+    placement_optimizer.set_weights(req.w1, req.w2, req.w3, req.w4)
+    return {"status": "ok", "weights": {"w1": req.w1, "w2": req.w2, "w3": req.w3, "w4": req.w4}}
+
+
+# ─────────────────────────────────────────
+# Layer 4 — Energy Cost Scheduler Endpoints
+# ─────────────────────────────────────────
+
+@app.get("/optimizer/energy/rate/current", tags=["Optimization"])
+def energy_rate_current():
+    """Return current energy rate, period type, and carbon intensity."""
+    now = datetime.utcnow()
+    return {
+        "rate_per_kwh": tariff.get_current_rate(now),
+        "period_type": tariff.get_period_type(now),
+        "carbon_intensity": tariff.get_carbon_intensity(now),
+        "is_grid_peak": tariff.is_grid_peak_event(now),
+        "timestamp": now.isoformat(),
+    }
+
+
+@app.get("/optimizer/energy/rate/forecast", response_model=List[HourlyRate], tags=["Optimization"])
+def energy_rate_forecast():
+    """24-hour price and carbon intensity forecast."""
+    return [HourlyRate(**h) for h in tariff.get_rate_forecast_24h(datetime.utcnow())]
+
+
+@app.get("/optimizer/energy/schedule", response_model=OptimalSchedule, tags=["Optimization"])
+def energy_schedule():
+    """Optimal deferrable load schedule for the next 24 hours."""
+    now = datetime.utcnow()
+    snap = get_last_snapshot()
+    peak_kw = sum(r.power_kw for r in snap.racks) if snap and snap.racks else 0.0
+    result = energy_scheduler.solve_schedule(DEFAULT_LOADS, now, peak_kw)
+    mapped_loads = [
+        ScheduledLoad(
+            load_name=l["load_name"],
+            load_type=l["load_type"],
+            start_time=l["start_time_iso"],
+            end_time=l["end_time_iso"],
+            power_kw=l["power_kw"],
+            energy_cost=l["energy_cost"],
+            cost_vs_immediate=l["cost_vs_immediate"],
+            cost_saving=l["cost_saving"],
+        )
+        for l in result["loads"]
+    ]
+    return OptimalSchedule(
+        loads=mapped_loads,
+        total_cost=result["total_cost"],
+        total_saving_vs_asap=result["total_saving_vs_asap"],
+        peak_demand_avoided_kw=result["peak_demand_avoided_kw"],
+        carbon_saved_kg=result["carbon_saved_kg"],
+        schedule_horizon_hrs=result["schedule_horizon_hrs"],
+    )
+
+
+@app.get("/optimizer/energy/bill/current-month", response_model=MonthlyBillProjection, tags=["Optimization"])
+def energy_bill_current_month():
+    """Projected electricity bill for the current calendar month."""
+    now = datetime.utcnow()
+    snap = get_last_snapshot()
+    it_kw = sum(r.power_kw for r in snap.racks) if snap and snap.racks else 200.0
+    result = energy_scheduler.project_monthly_bill(it_kw, now.day, 30, it_kw * 1.1)
+    return MonthlyBillProjection(**result)
+
+
+@app.get("/optimizer/energy/demand/current", response_model=DemandStatus, tags=["Optimization"])
+def energy_demand_current():
+    """Current 15-minute rolling demand and ratchet risk status."""
+    snap = get_last_snapshot()
+    it_kw = sum(r.power_kw for r in snap.racks) if snap and snap.racks else 200.0
+    facility_kw = it_kw * 1.4
+    rolling = energy_scheduler.track_15min_demand([facility_kw])
+    monthly_peak = facility_kw * 1.1
+    threshold = 400.0
+    return DemandStatus(
+        rolling_15min_kw=round(rolling, 2),
+        monthly_peak_kw=round(monthly_peak, 2),
+        demand_charge_to_date=round(monthly_peak * 18.50, 2),
+        ratchet_risk=monthly_peak > 350.0,
+        projected_demand_charge=round(monthly_peak * 18.50, 2),
+        threshold_kw=threshold,
+        utilization_pct=round(rolling / threshold * 100, 1),
+    )
+
+
+@app.get("/optimizer/energy/precooling", response_model=PreCoolingSchedule, tags=["Optimization"])
+def energy_precooling():
+    """Pre-cooling strategy: lower CHW setpoint before on-peak windows to coast on thermal mass."""
+    now = datetime.utcnow()
+    snap = get_last_snapshot()
+    chw = snap.chillers[0].chw_supply_temp_c if snap and snap.chillers else 8.0
+    crac = snap.cracs[0].setpoint_c if snap and snap.cracs else 18.0
+    result = energy_scheduler.optimize_precooling(tariff.get_rate_forecast_24h(now), chw, crac)
+    return PreCoolingSchedule(
+        actions=[PreCoolingAction(**a) for a in result["actions"]],
+        total_cost_saving=result["total_cost_saving"],
+        peak_load_reduction_kw=result["peak_load_reduction_kw"],
+        start_time=result["start_time"],
+        end_time=result["end_time"],
+    )
+
+
+# ─────────────────────────────────────────
+# Optimization Coordinator Endpoints
+# ─────────────────────────────────────────
+
+@app.get("/optimizer/unified", response_model=UnifiedOptimizationPlan, tags=["Optimization"])
+def optimizer_unified():
+    """Unified recommendation from all four optimization layers with conflict resolution."""
+    snap = get_last_snapshot()
+    if not snap or not snap.racks:
+        raise HTTPException(503, "No telemetry available.")
+    it_kw = sum(r.power_kw for r in snap.racks)
+    cooling_kw = sum(c.cooling_load_kw for c in snap.cracs)
+    pue = calculate_pue(it_kw, cooling_kw)
+    result = coordinator.get_unified_recommendations(snap, pue)
+    return UnifiedOptimizationPlan(
+        cooling_actions=result.get("cooling_actions", []),
+        placement_actions=result.get("placement_actions", []),
+        schedule_actions=result.get("schedule_actions", []),
+        maintenance_actions=result.get("maintenance_actions", []),
+        conflicts_detected=[OptimizationConflict(**c) for c in result.get("conflicts_detected", [])],
+        estimated_savings=result.get("estimated_savings", {}),
+        priority_order=result.get("priority_order", []),
+        generated_at=datetime.utcnow(),
+    )
+
+
+@app.get("/optimizer/pareto", response_model=ParetoFrontData, tags=["Optimization"])
+def optimizer_4obj_pareto():
+    """4-objective Pareto front: PUE, energy cost, reliability, carbon."""
+    snap = get_last_snapshot()
+    if not snap or not snap.racks:
+        raise HTTPException(503, "No telemetry available.")
+    return ParetoFrontData(**coordinator.compute_4obj_pareto(snap))
+
+
+@app.get("/optimizer/conflicts", response_model=List[OptimizationConflict], tags=["Optimization"])
+def optimizer_conflicts():
+    """Detect active conflicts between optimization layers."""
+    snap = get_last_snapshot()
+    now = datetime.utcnow()
+    forecast = tariff.get_rate_forecast_24h(now)
+    return [OptimizationConflict(**c) for c in coordinator.detect_conflicts(snap, forecast)]
+
+
+@app.get("/optimizer/savings/summary", response_model=SavingsSummary, tags=["Optimization"])
+def optimizer_savings_summary():
+    """Estimated annual savings across all four optimization layers."""
+    snap = get_last_snapshot()
+    it_kw = sum(r.power_kw for r in snap.racks) if snap and snap.racks else 200.0
+    cooling_kw = sum(c.cooling_load_kw for c in snap.cracs) if snap and snap.cracs else 100.0
+    facility_kw = it_kw + cooling_kw + it_kw * 0.05
+    return SavingsSummary(**coordinator.get_savings_summary(snap, it_kw, facility_kw))
