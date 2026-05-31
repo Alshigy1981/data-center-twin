@@ -469,7 +469,7 @@ def make_3d_figure(telemetry: Optional[Dict]) -> go.Figure:
 
     fig = go.Figure(data=traces)
     fig.update_layout(
-        paper_bgcolor="#0f1923",
+        paper_bgcolor="#2e2e2e",
         margin=dict(l=0, r=0, t=44, b=0),
         title=dict(
             text="Data Center Floor — Live Thermal View",
@@ -477,10 +477,10 @@ def make_3d_figure(telemetry: Optional[Dict]) -> go.Figure:
             x=0.01,
         ),
         scene=dict(
-            bgcolor="#0a1520",
-            xaxis=dict(visible=False, backgroundcolor="#0a1520"),
-            yaxis=dict(visible=False, backgroundcolor="#0a1520"),
-            zaxis=dict(visible=False, backgroundcolor="#0a1520"),
+            bgcolor="#2e2e2e",
+            xaxis=dict(visible=False, backgroundcolor="#2e2e2e"),
+            yaxis=dict(visible=False, backgroundcolor="#2e2e2e"),
+            zaxis=dict(visible=False, backgroundcolor="#2e2e2e"),
             camera=dict(
                 eye=dict(x=1.5, y=1.8, z=1.2),
                 center=dict(x=0, y=0, z=0),

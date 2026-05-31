@@ -233,6 +233,15 @@ section[data-testid="stSidebar"] * {
 .stSelectbox > div, .stSlider > div { color: #444444; }
 div[data-testid="stMetricValue"] { color: #1a1a1a !important; }
 div[data-testid="stExpander"] { background: #ebebeb; border: 1px solid #1a3050; border-radius: 6px; }
+
+/* ── Sidebar input overrides ────────────── */
+.stSelectbox > div > div          { background-color: #e8e8e8 !important; color: #1a1a1a !important; border: 1px solid #cccccc !important; }
+.stNumberInput > div > div > input { background-color: #e8e8e8 !important; color: #1a1a1a !important; border: 1px solid #cccccc !important; }
+.stSlider > div                    { background-color: transparent !important; }
+.stTextInput > div > div > input   { background-color: #e8e8e8 !important; color: #1a1a1a !important; border: 1px solid #cccccc !important; }
+div[data-baseweb="select"] > div   { background-color: #e8e8e8 !important; color: #1a1a1a !important; border: 1px solid #cccccc !important; }
+div[data-baseweb="input"] > div    { background-color: #e8e8e8 !important; color: #1a1a1a !important; }
+.stButton > button                 { background-color: #d0d0d0 !important; color: #1a1a1a !important; border: 1px solid #bbbbbb !important; }
 </style>
 """,
     unsafe_allow_html=True,

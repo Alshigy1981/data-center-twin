@@ -152,7 +152,7 @@ def make_three_html(
 <script src="{_THREE_CDN}"></script>
 <style>
   *{{ margin:0;padding:0;box-sizing:border-box; }}
-  body{{background:#0a0f1a;overflow:hidden;width:{width}px;height:{height}px;}}
+  body{{background:#2e2e2e;overflow:hidden;width:{width}px;height:{height}px;}}
   canvas{{display:block;}}
   #container{{position:relative;width:{width}px;height:{height}px;}}
 
@@ -272,8 +272,8 @@ const RACK_PITCH = {RACK_PITCH};
 
 // ── Scene ─────────────────────────────────────────────────────────────────────
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a0f1a);
-scene.fog = new THREE.FogExp2(0x0a0f1a, 0.007);
+scene.background = new THREE.Color(0x2e2e2e);
+scene.fog = new THREE.FogExp2(0x2e2e2e, 0.007);
 
 const camera = new THREE.PerspectiveCamera(60, W / H_VIEW, 0.1, 1000);
 
