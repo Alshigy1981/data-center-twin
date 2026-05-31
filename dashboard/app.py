@@ -55,10 +55,10 @@ html, body, [class*="css"] {
     color: #c8d8e8;
 }
 .stApp {
-    background-color: #0f1923;
+    background-color: #1a1a1a;
 }
 section[data-testid="stSidebar"] {
-    background-color: #0a1420;
+    background-color: #1e1e1e;
     border-right: 1px solid #1a2f45;
 }
 section[data-testid="stSidebar"] * {
@@ -83,7 +83,7 @@ section[data-testid="stSidebar"] * {
 
 /* ── KPI cards ──────────────────────────── */
 .kpi-card {
-    background: #112030;
+    background: #222222;
     border: 1px solid #1a3050;
     border-left: 4px solid #00aaff;
     border-radius: 6px;
@@ -130,12 +130,12 @@ section[data-testid="stSidebar"] * {
     border-radius: 5px;
     padding: 10px 12px;
     margin: 5px 0;
-    background: #0e1f30;
+    background: #242424;
     border-left: 4px solid #7090b0;
 }
 .alert-row.critical { border-left-color: #ff4444; background: #1a0e0e; }
 .alert-row.warning  { border-left-color: #ffaa00; background: #1a1500; }
-.alert-row.info     { border-left-color: #00aaff; background: #0d1f30; }
+.alert-row.info     { border-left-color: #00aaff; background: #242424; }
 
 .alert-severity-badge {
     font-size: 0.65rem;
@@ -174,7 +174,7 @@ section[data-testid="stSidebar"] * {
 
 /* ── Recommendation cards ───────────────── */
 .rec-card {
-    background: #0e1f30;
+    background: #242424;
     border: 1px solid #1a3050;
     border-radius: 6px;
     padding: 12px 14px;
@@ -232,7 +232,7 @@ section[data-testid="stSidebar"] * {
 /* ── General inputs ─────────────────────── */
 .stSelectbox > div, .stSlider > div { color: #a0b8cc; }
 div[data-testid="stMetricValue"] { color: #e0f0ff !important; }
-div[data-testid="stExpander"] { background: #0e1f30; border: 1px solid #1a3050; border-radius: 6px; }
+div[data-testid="stExpander"] { background: #242424; border: 1px solid #1a3050; border-radius: 6px; }
 </style>
 """,
     unsafe_allow_html=True,
