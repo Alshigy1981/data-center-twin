@@ -185,7 +185,8 @@ class TelemetrySnapshot(BaseModel):
     chillers: List[ChillerTelemetry] = Field(default_factory=list)
     upses: List[UPSTelemetry] = Field(default_factory=list)
     pdus: List[PDUTelemetry] = Field(default_factory=list)
-    outside_air_temp_c: float = Field(..., description="Simulated outside air temperature °C")
+    outside_air_temp_c: float = Field(..., description="Outside air temperature °C")
+    weather_source: Optional[str] = Field(None, description="'live' or 'simulated'")
 
 
 class TelemetryHistory(BaseModel):

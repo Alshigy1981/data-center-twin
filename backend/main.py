@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query
+from backend.adapters.open_meteo_adapter import OpenMeteoAdapter
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -138,6 +139,9 @@ app.add_middleware(
 # Cached asset inventory (static — no need to re-query on every request)
 _asset_inventory: Optional[AssetInventory] = None
 
+# Weather adapter (set on startup)
+_weather_adapter: Optional[OpenMeteoAdapter] = None
+
 
 def _get_inventory() -> AssetInventory:
     global _asset_inventory
@@ -153,8 +157,15 @@ def _get_inventory() -> AssetInventory:
 @app.on_event("startup")
 async def on_startup() -> None:
     """Initialise database and start background simulation thread."""
+    global _weather_adapter
     start_simulation(interval=SIMULATION_INTERVAL)
     logger.info("DC Twin API started.  Simulation interval: %ds", SIMULATION_INTERVAL)
+    if os.getenv("OPEN_METEO_ENABLED", "true").lower() == "true":
+        _weather_adapter = OpenMeteoAdapter()
+        logger.info(
+            "Open-Meteo weather adapter initialized for %s",
+            os.getenv("LOCATION_NAME", "Chicago, IL"),
+        )
 
 
 # ─────────────────────────────────────────
@@ -261,13 +272,26 @@ def get_assets() -> AssetInventory:
 def telemetry_live(db: Session = Depends(get_db)) -> TelemetrySnapshot:
     # Prefer in-memory snapshot (zero DB overhead) if available
     mem = get_last_snapshot()
-    if mem and mem.racks:
-        return mem
+    snapshot: Optional[TelemetrySnapshot] = mem if (mem and mem.racks) else None
 
-    rows = _latest_rows(db)
-    if not rows:
-        raise HTTPException(status_code=503, detail="No telemetry available yet — simulation starting.")
-    return _parse_snapshot_from_db(rows)
+    if snapshot is None:
+        rows = _latest_rows(db)
+        if not rows:
+            raise HTTPException(status_code=503, detail="No telemetry available yet — simulation starting.")
+        snapshot = _parse_snapshot_from_db(rows)
+
+    # Patch in real weather data if adapter is available
+    if _weather_adapter is not None:
+        try:
+            conditions = _weather_adapter.get_current_conditions()
+            snapshot = snapshot.model_copy(update={
+                "outside_air_temp_c": conditions["outside_air_temp_c"],
+                "weather_source":     conditions["source"],
+            })
+        except Exception as exc:
+            logger.warning("Weather patch failed, using simulated value: %s", exc)
+
+    return snapshot
 
 
 @app.get(
@@ -914,3 +938,32 @@ def optimizer_savings_summary():
     cooling_kw = sum(c.cooling_load_kw for c in snap.cracs) if snap and snap.cracs else 100.0
     facility_kw = it_kw + cooling_kw + it_kw * 0.05
     return SavingsSummary(**coordinator.get_savings_summary(snap, it_kw, facility_kw))
+
+
+# ─────────────────────────────────────────
+# Cloud / Weather endpoints
+# ─────────────────────────────────────────
+
+@app.get("/cloud/status", tags=["Cloud"])
+def cloud_status() -> Dict[str, Any]:
+    """Weather adapter health and configuration."""
+    if _weather_adapter is None:
+        return {"status": "disabled"}
+    return _weather_adapter.get_status()
+
+
+@app.get("/cloud/weather/current", tags=["Cloud"])
+def cloud_weather_current() -> Dict[str, Any]:
+    """Current outside air temperature and humidity from Open-Meteo."""
+    if _weather_adapter is None:
+        return {"status": "disabled", "source": "simulated"}
+    return _weather_adapter.get_current_conditions()
+
+
+@app.get("/cloud/weather/forecast", tags=["Cloud"])
+def cloud_weather_forecast() -> List[Dict[str, Any]]:
+    """24-hour hourly temperature forecast from Open-Meteo."""
+    if _weather_adapter is None:
+        from backend.adapters.open_meteo_adapter import OpenMeteoAdapter as _A
+        return _A._simulated_forecast()
+    return _weather_adapter.get_temperature_forecast_24h()

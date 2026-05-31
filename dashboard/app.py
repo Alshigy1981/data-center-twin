@@ -586,6 +586,105 @@ with k6:
 st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
+# WEATHER BADGE — slim line below KPI row
+# ─────────────────────────────────────────
+_weather_current = fetch("/cloud/weather/current")
+if _weather_current and _weather_current.get("source") != "disabled":
+    _wtemp  = _weather_current.get("outside_air_temp_c", 0.0)
+    _wsrc   = _weather_current.get("source", "simulated")
+    _wloc   = _weather_current.get("location", "")
+    if _wsrc == "live":
+        _badge_html = (
+            f'<div style="font-size:0.8rem;color:#444444;padding:3px 0 6px 2px;">'
+            f'🌡 Outside Temp: <b>{_wtemp:.1f}°C</b> &nbsp;—&nbsp; '
+            f'🟢 <span style="color:#00cc88;font-weight:600;">LIVE</span>'
+            + (f' ({_wloc})' if _wloc else '') +
+            f'</div>'
+        )
+    else:
+        _badge_html = (
+            f'<div style="font-size:0.8rem;color:#444444;padding:3px 0 6px 2px;">'
+            f'🌡 Outside Temp: <b>{_wtemp:.1f}°C</b> &nbsp;—&nbsp; '
+            f'⚪ <span style="color:#888888;">SIMULATED</span>'
+            f'</div>'
+        )
+    st.markdown(_badge_html, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────
+# WEATHER FORECAST PANEL
+# ─────────────────────────────────────────
+_location_name = os.getenv("LOCATION_NAME", "Chicago, IL")
+with st.expander(f"🌤 Outside Air Temperature — {_location_name}", expanded=True):
+    _forecast_data = fetch("/cloud/weather/forecast")
+    if _forecast_data and len(_forecast_data) > 0:
+        _fhours = [d.get("hour", "") for d in _forecast_data]
+        _ftemps = [d.get("temp_c", 0.0) for d in _forecast_data]
+        _fsource = _forecast_data[0].get("source", "simulated") if _forecast_data else "simulated"
+
+        fig_wx = go.Figure()
+        fig_wx.add_trace(go.Scatter(
+            x=_fhours, y=_ftemps,
+            mode="lines",
+            line=dict(color="#00aaff", width=2.5),
+            fill="tozeroy",
+            fillcolor="rgba(0,170,255,0.06)",
+            name="Temperature °C",
+            hovertemplate="<b>%{x|%H:%M}</b><br>%{y:.1f}°C<extra></extra>",
+        ))
+        # Reference lines
+        fig_wx.add_hline(y=18, line_dash="dash", line_color="#00cc88", line_width=1.5,
+                         annotation_text="18°C — Economizer threshold",
+                         annotation_font_color="#00cc88", annotation_font_size=9)
+        fig_wx.add_hline(y=25, line_dash="dash", line_color="#ffaa00", line_width=1.5,
+                         annotation_text="25°C — Cooling stress begins",
+                         annotation_font_color="#ffaa00", annotation_font_size=9)
+        fig_wx.add_hline(y=32, line_dash="dash", line_color="#ff4444", line_width=1.5,
+                         annotation_text="32°C — High cooling load",
+                         annotation_font_color="#ff4444", annotation_font_size=9)
+        # Green economizer zone
+        fig_wx.add_hrect(y0=0, y1=18, fillcolor="rgba(0,204,136,0.07)", line_width=0)
+
+        apply_dark_layout(fig_wx, f"24-Hour Temperature Forecast — {_location_name}")
+        fig_wx.update_layout(
+            height=240,
+            yaxis_title="°C",
+            xaxis_title="",
+            margin=dict(l=40, r=20, t=40, b=30),
+            annotations=list(fig_wx.layout.annotations) + [
+                dict(
+                    text=f"Source: Open-Meteo | {'Live data' if _fsource == 'live' else 'Simulated'} | Updated every 15 minutes",
+                    x=0.5, y=-0.12, xref="paper", yref="paper",
+                    showarrow=False, font=dict(size=9, color="#888888"),
+                )
+            ],
+        )
+        st.plotly_chart(fig_wx, use_container_width=True)
+
+        # Two mini KPI cards below the chart
+        _wx_c1, _wx_c2 = st.columns(2)
+        if _weather_current and _weather_current.get("source") != "disabled":
+            _cur_t = _weather_current.get("outside_air_temp_c", 0.0)
+            _cur_h = _weather_current.get("humidity_pct", 0.0)
+            _feels = (
+                "Economizer opportunity" if _cur_t < 18
+                else "Moderate cooling load" if _cur_t < 25
+                else "High cooling load" if _cur_t < 32
+                else "Critical cooling load"
+            )
+            with _wx_c1:
+                st.markdown(
+                    kpi_card("Outside Temp", f"{_cur_t:.1f}°C", sub=_feels),
+                    unsafe_allow_html=True,
+                )
+            with _wx_c2:
+                st.markdown(
+                    kpi_card("Outside Humidity", f"{_cur_h:.0f}%", sub="Relative humidity"),
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.info("Weather forecast unavailable — check API connection.")
+
+# ─────────────────────────────────────────
 # 5. VISUALIZATION — 2D Heatmap / 3D Plotly / 3D WebGL
 # ─────────────────────────────────────────
 
