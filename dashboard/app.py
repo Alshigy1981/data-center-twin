@@ -264,6 +264,26 @@ div[data-testid="stWidgetLabel"] { color: #1a1a1a !important; }
 div[data-baseweb="select"] > div   { background-color: #e8e8e8 !important; color: #1a1a1a !important; border: 1px solid #cccccc !important; }
 div[data-baseweb="input"] > div    { background-color: #e8e8e8 !important; color: #1a1a1a !important; }
 .stButton > button                 { background-color: #d0d0d0 !important; color: #1a1a1a !important; border: 1px solid #bbbbbb !important; }
+
+/* ── Number input text color ────────────── */
+.stNumberInput input                                   { color: #1a1a1a !important; }
+.stNumberInput > div > div > input                     { color: #1a1a1a !important; }
+div[data-baseweb="input"] input                        { color: #1a1a1a !important; }
+input[type="number"]                                   { color: #1a1a1a !important; }
+.stNumberInput [data-testid="stNumberInput"] input     { color: #1a1a1a !important; }
+
+/* ── Number input +/- buttons ───────────── */
+.stNumberInput button              { color: #ffffff !important; background-color: #555555 !important; border: 1px solid #888888 !important; }
+.stNumberInput button:hover        { background-color: #777777 !important; }
+.stNumberInput button p            { color: #ffffff !important; }
+.stNumberInput button svg          { fill: #ffffff !important; stroke: #ffffff !important; }
+div[data-baseweb="input"] button   { color: #ffffff !important; background-color: #555555 !important; }
+div[data-baseweb="input"] button svg { fill: #ffffff !important; }
+
+/* ── Sidebar resize handle + width ──────── */
+section[data-testid="stSidebar"]           { min-width: 220px !important; max-width: 400px !important; width: auto !important; }
+section[data-testid="stSidebar"] > div     { width: 100% !important; overflow-x: visible !important; }
+div[data-testid="stSidebarResizeHandle"]   { display: block !important; visibility: visible !important; background-color: #aaaaaa !important; width: 4px !important; cursor: col-resize !important; }
 </style>
 """,
     unsafe_allow_html=True,
