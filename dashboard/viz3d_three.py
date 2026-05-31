@@ -1,66 +1,74 @@
 """
-Premium 3D data center visualization using Three.js (WebGL).
+Premium 3D data center visualization — Three.js / WebGL.
 
-Generates a self-contained HTML page that is embedded in the Streamlit
-dashboard via st.components.v1.html().
+Self-contained HTML embedded via st.components.v1.html().
+Uses Three.js r128 from CDN (global THREE object, no ES modules).
+Manual orbit controls — no OrbitControls import needed.
 
-Features
---------
-- Physically-based lighting (ambient + directional + hemisphere)
-- Temperature-gradient coloured racks (blue → green → amber → red)
-- Rack height proportional to power draw
-- CRAC units rendered as tall cyan boxes
-- Hot / cold aisle strips on the floor
-- Grid overlay on the floor
-- Hover raycasting tooltip (rack ID, temp, power)
-- Animated glow pulse on racks above 28 °C
-- Orbit controls (drag to rotate, scroll to zoom, right-drag to pan)
-- Legend and live stats overlay
-- Fully offline-capable (Three.js loaded from CDN; swap for local path if needed)
+Features:
+- Temperature-gradient coloured racks (blue → teal → green → amber → red)
+- Rack height ∝ power draw
+- Flat CRAC units on room perimeters with glow lights
+- Hot / cold aisle floor strips
+- Pulsing alert edges on hot racks, breathing on critical racks
+- Raycaster hover tooltip
+- LIVE data polling every 5 s with hash-based diff
+- Auto-rotate (pauses on mouse interaction, resumes after 3 s)
+- Touch support (drag=rotate, pinch=zoom)
+- "API unavailable" overlay on fetch error
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 # ─────────────────────────────────────────
 # Layout constants (must match viz3d.py)
 # ─────────────────────────────────────────
-RACK_PITCH  = 1.20
-ROW_PITCH   = 4.80
-ROOM_GAP    = 6.00
-N_ROWS      = 4
-N_RACKS     = 10
-MIN_H       = 0.40
-MAX_H       = 2.80
+RACK_PITCH = 1.20
+ROW_PITCH  = 3.00
+ROOM_B_X   = 18.0
+N_ROWS     = 4
+N_RACKS    = 10
+MIN_H      = 0.30
+MAX_H      = 3.00
+
+# Three.js specific dimensions
+RACK_W_JS  = 0.70
+RACK_D_JS  = 0.70
+CRAC_W_JS  = 1.80
+CRAC_D_JS  = 1.20
+CRAC_H_JS  = 0.30
+
+# Fixed CRAC centres (x, z) — matches viz3d.py _CRAC_POS
+_CRAC_FIXED: List[Tuple[str, float, float]] = [
+    ("C-A1",  5.50,  -1.25),
+    ("C-A2",  5.50,  11.25),
+    ("C-A3", -1.25,   4.90),
+    ("C-A4", 12.25,   4.90),
+    ("C-B1",  ROOM_B_X + 5.50,  -1.25),
+    ("C-B2",  ROOM_B_X + 5.50,  11.25),
+    ("C-B3",  ROOM_B_X - 1.25,   4.90),
+    ("C-B4",  ROOM_B_X + 12.25,  4.90),
+]
+
+_THREE_CDN = "https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"
 
 
-def _rack_pos(room: str, row: str, position: int) -> dict:
+def _rack_pos(room: str, row: str, position: int) -> Dict:
     room_idx = 0 if "A" in room else 1
     row_idx  = int(row.split()[-1]) - 1
     pos_idx  = int(position) - 1
     return {
-        "x": pos_idx * RACK_PITCH,
-        "z": row_idx * ROW_PITCH + room_idx * (N_ROWS * ROW_PITCH + ROOM_GAP),
+        "x": (ROOM_B_X if room_idx else 0.0) + pos_idx * RACK_PITCH,
+        "z": row_idx * ROW_PITCH,
     }
 
 
-def _crac_pos(asset_id: str, room: str) -> dict:
-    try:
-        num = int(asset_id.split("-")[-1]) - 1
-    except ValueError:
-        return {"x": 0, "z": 0}
-    room_idx = 0 if "A" in room else 1
-    x = (-1.80) if num % 2 == 0 else (N_RACKS * RACK_PITCH + 0.60)
-    z = (num // 2) * 2 * ROW_PITCH + ROW_PITCH
-    z += room_idx * (N_ROWS * ROW_PITCH + ROOM_GAP)
-    return {"x": x, "z": z}
-
-
-def _build_data(telemetry: Optional[Dict]) -> tuple[list, list]:
-    """Extract rack and CRAC data arrays for embedding in HTML."""
-    racks_js, cracs_js = [], []
+def _build_data(telemetry: Optional[Dict]) -> Tuple[list, list]:
+    racks_js: list = []
+    cracs_js: list = []
     t = telemetry or {}
 
     for r in t.get("racks", []):
@@ -68,460 +76,544 @@ def _build_data(telemetry: Optional[Dict]) -> tuple[list, list]:
                         r.get("row", "Row 1"),
                         r.get("position", 1))
         racks_js.append({
-            "id":      r.get("asset_id", ""),
-            "x":       pos["x"],
-            "z":       pos["z"],
-            "temp":    float(r.get("inlet_temp_c", 22)),
-            "outlet":  float(r.get("outlet_temp_c", 32)),
-            "power":   float(r.get("power_kw", 0)),
-            "humid":   float(r.get("humidity_pct", 50)),
-            "ashrae":  str(r.get("ashrae_class", "A1")),
-            "room":    r.get("room", ""),
-            "row":     r.get("row", ""),
+            "id":     r.get("asset_id", ""),
+            "x":      pos["x"],
+            "z":      pos["z"],
+            "temp":   float(r.get("inlet_temp_c", 22)),
+            "outlet": float(r.get("outlet_temp_c", 32)),
+            "power":  float(r.get("power_kw", 0)),
+            "humid":  float(r.get("humidity_pct", 50)),
+            "ashrae": str(r.get("ashrae_class", "A1")),
+            "room":   r.get("room", ""),
+            "row":    r.get("row", ""),
         })
 
-    for c in t.get("cracs", []):
-        pos = _crac_pos(c.get("asset_id", ""), c.get("room", "Room A"))
+    # Use fixed CRAC positions; enrich with API data when available
+    api_a = [c for c in t.get("cracs", []) if "A" in c.get("room", "")]
+    api_b = [c for c in t.get("cracs", []) if "B" in c.get("room", "")]
+    api_map: Dict[str, Dict] = {}
+    for i, c in enumerate(api_a[:4]):
+        api_map[f"C-A{i+1}"] = c
+    for i, c in enumerate(api_b[:4]):
+        api_map[f"C-B{i+1}"] = c
+
+    for label, cx, cz in _CRAC_FIXED:
+        api_c = api_map.get(label, {})
         cracs_js.append({
-            "id":      c.get("asset_id", ""),
-            "x":       pos["x"],
-            "z":       pos["z"],
-            "supply":  float(c.get("supply_air_temp_c", 18)),
-            "ret":     float(c.get("return_air_temp_c", 28)),
-            "dt":      float(c.get("delta_t_c", 10)),
-            "cooling": float(c.get("cooling_load_kw", 60)),
-            "room":    c.get("room", ""),
+            "id":      label,
+            "real_id": api_c.get("asset_id", label),
+            "x":       cx,
+            "z":       cz,
+            "supply":  float(api_c.get("supply_air_temp_c", 18)),
+            "ret":     float(api_c.get("return_air_temp_c", 28)),
+            "dt":      float(api_c.get("delta_t_c", 10)),
+            "cooling": float(api_c.get("cooling_load_kw", 60)),
+            "room":    api_c.get("room", ""),
         })
 
     return racks_js, cracs_js
 
 
-_THREE_CDN  = "https://unpkg.com/three@0.160.0/build/three.module.js"
-_ORBIT_CDN  = "https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js"
-
-
-def make_three_html(telemetry: Optional[Dict],
-                    width: int = 1200,
-                    height: int = 720) -> str:
-    """Return a self-contained HTML page with the Three.js 3D scene."""
+def make_three_html(
+    telemetry: Optional[Dict],
+    width: int = 1200,
+    height: int = 720,
+) -> str:
+    """Return a self-contained HTML page embedding the Three.js 3D scene."""
 
     racks_data, cracs_data = _build_data(telemetry)
     racks_json = json.dumps(racks_data)
     cracs_json = json.dumps(cracs_data)
 
-    min_h      = MIN_H
-    max_h      = MAX_H
-    rack_w     = 0.65
-    rack_d     = 0.65
-    crac_w     = 1.20
-    crac_d     = 0.80
-    crac_h     = 2.50
-    floor_x0   = -3.0
-    floor_x1   = N_RACKS * RACK_PITCH + 2.5
-    floor_z0   = -2.0
-    floor_z1   = (N_ROWS * ROW_PITCH) * 2 + ROOM_GAP + 3.0
-    cam_target_x = (N_RACKS - 1) * RACK_PITCH / 2
-    cam_target_z = floor_z1 / 2
+    # Floor bounds
+    floor_x0 = -2.5
+    floor_x1 = ROOM_B_X + (N_RACKS - 1) * RACK_PITCH + RACK_W_JS + 2.5
+    floor_z0 = -2.5
+    floor_z1 = (N_ROWS - 1) * ROW_PITCH + RACK_D_JS + 3.5
+
+    # Camera target = centre of whole floor plan
+    cam_x = (floor_x0 + floor_x1) / 2
+    cam_z = (floor_z0 + floor_z1) / 2
+
+    # Room label world positions (above centre of each room)
+    room_a_cx = (N_RACKS - 1) * RACK_PITCH / 2
+    room_b_cx = ROOM_B_X + (N_RACKS - 1) * RACK_PITCH / 2
+    room_cz   = (N_ROWS - 1) * ROW_PITCH / 2
+
+    fw = floor_x1 - floor_x0
+    fd = floor_z1 - floor_z0
+    fx_mid = (floor_x0 + floor_x1) / 2
+    fz_mid = (floor_z0 + floor_z1) / 2
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8"/>
+<meta charset="utf-8">
+<script src="{_THREE_CDN}"></script>
 <style>
-  * {{ margin:0; padding:0; box-sizing:border-box; }}
-  body {{
-    background:#0a1520;
-    overflow:hidden;
-    font-family:'Inter','Segoe UI',system-ui,sans-serif;
-    color:#c8d8e8;
-    width:{width}px;
-    height:{height}px;
-  }}
-  canvas {{ display:block; }}
+  *{{ margin:0;padding:0;box-sizing:border-box; }}
+  body{{background:#0a0f1a;overflow:hidden;width:{width}px;height:{height}px;}}
+  canvas{{display:block;}}
+  #container{{position:relative;width:{width}px;height:{height}px;}}
 
-  #tooltip {{
-    position:absolute;
-    display:none;
-    background:rgba(10,21,32,0.96);
-    border:1px solid #00aaff;
-    border-radius:6px;
-    padding:10px 14px;
-    font-size:11.5px;
-    line-height:1.65;
-    color:#c8d8e8;
-    pointer-events:none;
-    max-width:210px;
-    z-index:10;
-    box-shadow:0 4px 16px rgba(0,0,0,0.6);
+  /* ── Overlays ── */
+  #dc-title{{
+    position:absolute;top:10px;left:10px;
+    color:#00aaff;font-family:'Courier New',monospace;
+    font-size:13px;font-weight:bold;pointer-events:none;z-index:10;
+    text-shadow:0 0 8px rgba(0,170,255,.45);
   }}
-  #tooltip b {{ color:#e0f0ff; }}
-  #tooltip .th {{ color:#ff6666; }}
-  #tooltip .tc {{ color:#00cc88; }}
+  #live-badge{{
+    position:absolute;top:10px;right:10px;
+    color:#c8d8e8;font-family:'Courier New',monospace;
+    font-size:11px;z-index:10;pointer-events:none;
+    display:flex;align-items:center;gap:5px;
+  }}
+  .live-dot{{color:#00ff44;font-size:15px;animation:blink 1.4s ease-in-out infinite;}}
+  @keyframes blink{{0%,100%{{opacity:1}}50%{{opacity:.15}}}}
 
-  #legend {{
-    position:absolute;
-    top:10px; right:10px;
-    background:rgba(10,18,28,0.88);
-    border:1px solid #1a3050;
-    border-radius:6px;
-    padding:10px 14px;
-    font-size:10.5px;
-    z-index:10;
-    min-width:140px;
+  #legend{{
+    position:absolute;bottom:12px;left:10px;
+    background:rgba(10,18,28,.88);border:1px solid #1a3050;border-radius:5px;
+    padding:8px 12px;font-family:'Courier New',monospace;pointer-events:none;z-index:10;
+    min-width:135px;
   }}
-  #legend .title {{
-    color:#7090b0;
-    text-transform:uppercase;
-    letter-spacing:.08em;
-    font-size:9px;
-    margin-bottom:7px;
+  #legend .ltitle{{color:#3a5a7a;font-size:8px;text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;}}
+  .lr{{display:flex;align-items:center;gap:6px;margin-top:4px;}}
+  .sw{{width:11px;height:11px;border-radius:2px;flex-shrink:0;}}
+  .lr span{{color:#6a8aaa;font-size:9px;}}
+
+  #hint{{
+    position:absolute;bottom:12px;right:10px;
+    color:#2a4a6a;font-family:'Courier New',monospace;font-size:9px;
+    pointer-events:none;z-index:10;text-align:right;line-height:1.65;
   }}
-  .grad-bar {{
-    width:100%;
-    height:10px;
-    border-radius:3px;
-    background:linear-gradient(to right,#0044bb,#00cc88,#ffaa00,#ff1111);
-    margin:5px 0 3px;
-  }}
-  .grad-labels {{
-    display:flex;
-    justify-content:space-between;
-    font-size:9px;
-    color:#4a6a8a;
-  }}
-  .legend-row {{
-    display:flex; align-items:center; gap:7px; margin-top:6px;
-  }}
-  .swatch {{
-    width:14px; height:14px; border-radius:2px; flex-shrink:0;
+  #updated{{
+    position:absolute;top:30px;right:10px;
+    color:#2a4a6a;font-family:'Courier New',monospace;font-size:9px;
+    pointer-events:none;z-index:10;
   }}
 
-  #stats {{
-    position:absolute;
-    bottom:10px; left:10px; right:10px;
-    background:rgba(10,18,28,0.82);
-    border:1px solid #1a3050;
-    border-radius:5px;
-    padding:7px 14px;
-    font-size:10px;
-    display:flex; gap:22px; align-items:center;
-    z-index:10;
+  #tooltip{{
+    position:absolute;display:none;
+    background:rgba(10,21,32,.96);border:1px solid #00aaff;border-radius:6px;
+    padding:10px 14px;font-size:11px;line-height:1.65;color:#c8d8e8;
+    pointer-events:none;max-width:230px;z-index:20;
+    box-shadow:0 4px 16px rgba(0,0,0,.6);font-family:'Courier New',monospace;
   }}
-  #stats .lbl {{ color:#3a5a7a; }}
-  #stats .val {{ color:#00aaff; font-weight:600; }}
-  #stats .hot {{ color:#ff5544; font-weight:600; }}
-  #stats .cool{{ color:#00cc88; font-weight:600; }}
+  #tooltip b{{color:#e0f0ff;}}
+  .t-hot{{color:#ff6666;}}.t-cool{{color:#00cc88;}}
 
-  #hint {{
-    position:absolute;
-    top:10px; left:10px;
-    color:#2a4a6a;
-    font-size:9.5px;
-    z-index:10;
-    letter-spacing:.04em;
+  #api-error{{
+    position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    background:rgba(20,8,8,.92);border:1px solid #ff4444;border-radius:8px;
+    padding:18px 24px;font-size:12px;color:#ff8888;
+    font-family:'Courier New',monospace;z-index:20;text-align:center;display:none;
+  }}
+  .rl{{
+    position:absolute;color:#00aaff;font-family:'Courier New',monospace;
+    font-size:13px;font-weight:bold;pointer-events:none;z-index:10;
+    text-shadow:0 0 6px rgba(0,170,255,.4);display:none;
+    transform:translate(-50%,-50%);
   }}
 </style>
-
-<script type="importmap">
-{{
-  "imports": {{
-    "three":            "{_THREE_CDN}",
-    "three/addons/":    "https://unpkg.com/three@0.160.0/examples/jsm/"
-  }}
-}}
-</script>
 </head>
-
 <body>
-<div id="tooltip"></div>
-<div id="hint">drag · scroll · right-drag pan</div>
-
-<div id="legend">
-  <div class="title">Rack Inlet Temperature</div>
-  <div class="grad-bar"></div>
-  <div class="grad-labels"><span>16°C</span><span>27°C</span><span>38°C</span></div>
-  <div class="legend-row"><div class="swatch" style="background:#005577"></div><span style="font-size:10px;color:#6a8aaa">CRAC unit</span></div>
-  <div class="legend-row"><div class="swatch" style="background:#001f66;opacity:.7"></div><span style="font-size:10px;color:#6a8aaa">Cold aisle</span></div>
-  <div class="legend-row"><div class="swatch" style="background:#440000;opacity:.7"></div><span style="font-size:10px;color:#6a8aaa">Hot aisle</span></div>
+<div id="container">
+  <div id="dc-title">DC TWIN — 3D LIVE VIEW</div>
+  <div id="live-badge"><span class="live-dot">&#9679;</span>&nbsp;LIVE</div>
+  <div id="legend">
+    <div class="ltitle">Rack Inlet Temp</div>
+    <div class="lr"><div class="sw" style="background:#0066ff"></div><span>&lt;20°C</span></div>
+    <div class="lr"><div class="sw" style="background:#00ccaa"></div><span>20–24°C</span></div>
+    <div class="lr"><div class="sw" style="background:#00cc44"></div><span>24–27°C</span></div>
+    <div class="lr"><div class="sw" style="background:#ffaa00"></div><span>27–30°C warm</span></div>
+    <div class="lr"><div class="sw" style="background:#ff6600"></div><span>30–33°C hot</span></div>
+    <div class="lr"><div class="sw" style="background:#ff2200"></div><span>&gt;33°C crit</span></div>
+    <div class="lr"><div class="sw" style="background:#00ccaa;height:5px"></div><span>CRAC unit</span></div>
+    <div class="lr"><div class="sw" style="background:#002266;opacity:.7"></div><span>Cold aisle</span></div>
+    <div class="lr"><div class="sw" style="background:#550000;opacity:.7"></div><span>Hot aisle</span></div>
+  </div>
+  <div id="hint">Drag to rotate<br>Scroll to zoom<br>Hover for details</div>
+  <div id="updated"></div>
+  <div id="tooltip"></div>
+  <div id="api-error">&#9888; API unavailable<br><small style="color:#aa6666">Start: uvicorn backend.main:app --port 8000</small></div>
+  <div id="rl-a" class="rl">ROOM A</div>
+  <div id="rl-b" class="rl">ROOM B</div>
 </div>
 
-<div id="stats">
-  <span><span class="lbl">IT Load </span><span class="val" id="s-it">—</span></span>
-  <span><span class="lbl">Avg Inlet </span><span class="val" id="s-avg">—</span></span>
-  <span><span class="lbl">Max Inlet </span><span class="hot" id="s-max">—</span></span>
-  <span><span class="lbl">Min Inlet </span><span class="cool" id="s-min">—</span></span>
-  <span><span class="lbl">Hottest rack </span><span class="hot" id="s-hid">—</span></span>
-</div>
+<script>
+if (typeof THREE === 'undefined') {{
+  var e = document.getElementById('api-error');
+  e.innerHTML = '&#9888; Three.js CDN unavailable<br><small style="color:#aa6666">Check network</small>';
+  e.style.display = 'block';
+  throw new Error('THREE not loaded');
+}}
 
-<script type="module">
-import * as THREE from 'three';
-import {{ OrbitControls }} from 'three/addons/controls/OrbitControls.js';
-
-// ── Data ─────────────────────────────────────────────────────────────────────
+// ── Embedded data ─────────────────────────────────────────────────────────────
 const RACKS = {racks_json};
 const CRACS = {cracs_json};
-const MIN_H = {min_h}, MAX_H = {max_h};
-const RACK_W = {rack_w}, RACK_D = {rack_d};
-const CRAC_W = {crac_w}, CRAC_D = {crac_d}, CRAC_H = {crac_h};
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const RACK_W  = {RACK_W_JS};
+const RACK_D  = {RACK_D_JS};
+const CRAC_W  = {CRAC_W_JS};
+const CRAC_D  = {CRAC_D_JS};
+const CRAC_H  = {CRAC_H_JS};
+const MIN_H   = {MIN_H};
+const MAX_H   = {MAX_H};
+const W       = {width};
+const H_VIEW  = {height};
+const ROW_PITCH  = {ROW_PITCH};
+const ROOM_B_X   = {ROOM_B_X};
+const N_ROWS_C   = {N_ROWS};
+const N_RACKS_C  = {N_RACKS};
+const RACK_PITCH = {RACK_PITCH};
 
 // ── Scene ─────────────────────────────────────────────────────────────────────
-const W = {width}, H = {height};
-const scene    = new THREE.Scene();
-scene.background = new THREE.Color(0x0a1520);
-scene.fog        = new THREE.FogExp2(0x0a1520, 0.009);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0f1a);
+scene.fog = new THREE.FogExp2(0x0a0f1a, 0.007);
 
-const camera = new THREE.PerspectiveCamera(42, W / H, 0.1, 500);
-camera.position.set({cam_target_x} + 8, 14, {cam_target_z} + 14);
+const camera = new THREE.PerspectiveCamera(60, W / H_VIEW, 0.1, 1000);
 
-const renderer = new THREE.WebGLRenderer({{ antialias: true }});
-renderer.setSize(W, H);
+const renderer = new THREE.WebGLRenderer({{ antialias: true, alpha: true }});
+renderer.setSize(W, H_VIEW);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type    = THREE.PCFSoftShadowMap;
-document.body.appendChild(renderer.domElement);
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('container').insertBefore(renderer.domElement, document.getElementById('dc-title'));
 
-// ── Controls ──────────────────────────────────────────────────────────────────
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping  = true;
-controls.dampingFactor  = 0.07;
-controls.target.set({cam_target_x}, 0.5, {cam_target_z});
-controls.minDistance    = 4;
-controls.maxDistance    = 80;
-controls.maxPolarAngle  = Math.PI / 2.05;
-controls.update();
-
-// ── Lights ────────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0x334466, 0.7));
-
-const sun = new THREE.DirectionalLight(0xffffff, 0.9);
-sun.position.set(20, 30, 20);
+// ── Lighting ──────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+var sun = new THREE.DirectionalLight(0xffffff, 0.8);
+sun.position.set(22, 35, 18);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.near = 1;
-sun.shadow.camera.far  = 120;
-sun.shadow.camera.left = sun.shadow.camera.bottom = -40;
-sun.shadow.camera.right = sun.shadow.camera.top   =  40;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -55;
+sun.shadow.camera.right = sun.shadow.camera.top   =  55;
 scene.add(sun);
+scene.add(new THREE.HemisphereLight(0x223355, 0x0a0f1a, 0.35));
 
-scene.add(new THREE.HemisphereLight(0x334466, 0x0a1520, 0.5));
+// ── Manual orbit controls ─────────────────────────────────────────────────────
+var lookAtPt = new THREE.Vector3({cam_x:.2f}, 0, {cam_z:.2f});
+var sph = {{ theta: 0.9, phi: 0.85, radius: 52 }};
+var isDragging = false;
+var lastMX = 0, lastMY = 0;
+var autoRot = true;
+var lastActivity = Date.now();
+
+function updateCam() {{
+  var sinP = Math.sin(sph.phi), cosP = Math.cos(sph.phi);
+  camera.position.set(
+    lookAtPt.x + sph.radius * sinP * Math.sin(sph.theta),
+    lookAtPt.y + sph.radius * cosP,
+    lookAtPt.z + sph.radius * sinP * Math.cos(sph.theta)
+  );
+  camera.lookAt(lookAtPt);
+}}
+updateCam();
+
+renderer.domElement.addEventListener('mousedown', function(e) {{
+  isDragging = true; autoRot = false; lastActivity = Date.now();
+  lastMX = e.clientX; lastMY = e.clientY;
+}});
+document.addEventListener('mouseup', function() {{ isDragging = false; }});
+document.addEventListener('mousemove', function(e) {{
+  if (!isDragging) return;
+  sph.theta -= (e.clientX - lastMX) * 0.008;
+  sph.phi    = Math.max(0.12, Math.min(Math.PI * 0.47, sph.phi + (e.clientY - lastMY) * 0.008));
+  lastMX = e.clientX; lastMY = e.clientY;
+  lastActivity = Date.now();
+  updateCam();
+}});
+renderer.domElement.addEventListener('wheel', function(e) {{
+  e.preventDefault();
+  sph.radius = Math.max(10, Math.min(130, sph.radius + e.deltaY * 0.05));
+  autoRot = false; lastActivity = Date.now();
+  updateCam();
+}}, {{ passive: false }});
+
+// Touch
+var lastTouches = [];
+renderer.domElement.addEventListener('touchstart', function(e) {{
+  isDragging = true; autoRot = false; lastActivity = Date.now();
+  lastTouches = Array.from(e.touches).map(function(t) {{ return {{x:t.clientX, y:t.clientY}}; }});
+}});
+renderer.domElement.addEventListener('touchend', function() {{ isDragging = false; }});
+renderer.domElement.addEventListener('touchmove', function(e) {{
+  e.preventDefault();
+  var touches = Array.from(e.touches).map(function(t) {{ return {{x:t.clientX, y:t.clientY}}; }});
+  if (touches.length === 1 && lastTouches.length >= 1) {{
+    sph.theta -= (touches[0].x - lastTouches[0].x) * 0.009;
+    sph.phi = Math.max(0.12, Math.min(Math.PI*0.47, sph.phi + (touches[0].y - lastTouches[0].y) * 0.009));
+  }} else if (touches.length === 2 && lastTouches.length === 2) {{
+    var d0 = Math.hypot(lastTouches[1].x-lastTouches[0].x, lastTouches[1].y-lastTouches[0].y);
+    var d1 = Math.hypot(touches[1].x-touches[0].x, touches[1].y-touches[0].y);
+    if (d1 > 0) sph.radius = Math.max(10, Math.min(130, sph.radius * d0 / d1));
+  }}
+  lastTouches = touches;
+  lastActivity = Date.now();
+  updateCam();
+}}, {{ passive: false }});
 
 // ── Floor ─────────────────────────────────────────────────────────────────────
-const floorGeo = new THREE.PlaneGeometry({floor_x1 - floor_x0:.1f}, {floor_z1 - floor_z0:.1f});
-const floorMat = new THREE.MeshLambertMaterial({{ color: 0x0d1a26 }});
-const floor    = new THREE.Mesh(floorGeo, floorMat);
-floor.rotation.x = -Math.PI / 2;
-floor.position.set(
-  ({floor_x0:.2f} + {floor_x1:.2f}) / 2,
-  0,
-  ({floor_z0:.2f} + {floor_z1:.2f}) / 2
+var floorMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry({fw:.2f}, {fd:.2f}),
+  new THREE.MeshLambertMaterial({{ color: 0x1a2332, transparent: true, opacity: 0.85 }})
 );
-floor.receiveShadow = true;
-scene.add(floor);
+floorMesh.rotation.x = -Math.PI / 2;
+floorMesh.position.set({fx_mid:.2f}, 0, {fz_mid:.2f});
+floorMesh.receiveShadow = true;
+scene.add(floorMesh);
 
-// Grid
-const grid = new THREE.GridHelper(
-  Math.max({floor_x1 - floor_x0:.1f}, {floor_z1 - floor_z0:.1f}),
-  40, 0x1a2a3a, 0x0f1f2e
-);
-grid.position.set(
-  ({floor_x0:.2f} + {floor_x1:.2f}) / 2,
-  0.005,
-  ({floor_z0:.2f} + {floor_z1:.2f}) / 2
-);
+var grid = new THREE.GridHelper(Math.max({fw:.1f}, {fd:.1f}) * 1.1, 35, 0x1e3a5f, 0x0e1e2e);
+grid.position.set({fx_mid:.2f}, 0.006, {fz_mid:.2f});
 scene.add(grid);
 
 // ── Aisle strips ──────────────────────────────────────────────────────────────
-function aisleStrip(x0, z0, x1, z1, hex, opacity) {{
-  const geo = new THREE.PlaneGeometry(x1 - x0, z1 - z0);
-  const mat = new THREE.MeshBasicMaterial({{
-    color: hex,
-    transparent: true,
-    opacity,
-    depthWrite: false,
-  }});
-  const m = new THREE.Mesh(geo, mat);
+function aisleStrip(x0, z0, x1, z1, hexColor, opacity) {{
+  var m = new THREE.Mesh(
+    new THREE.PlaneGeometry(x1-x0, z1-z0),
+    new THREE.MeshBasicMaterial({{ color: hexColor, transparent: true, opacity: opacity, depthWrite: false }})
+  );
   m.rotation.x = -Math.PI / 2;
-  m.position.set((x0 + x1) / 2, 0.01, (z0 + z1) / 2);
+  m.position.set((x0+x1)/2, 0.012, (z0+z1)/2);
   scene.add(m);
 }}
-
-const ROW_PITCH = {ROW_PITCH};
-const N_ROWS    = {N_ROWS};
-const ROOM_GAP  = {ROOM_GAP};
-const N_RACKS   = {N_RACKS};
-const RACK_PITCH= {RACK_PITCH};
-
-for (let room = 0; room < 2; room++) {{
-  const zBase = room * (N_ROWS * ROW_PITCH + ROOM_GAP);
-  for (let row = 0; row < N_ROWS - 1; row++) {{
-    const za = zBase + row * ROW_PITCH + RACK_D + 0.05;
-    const zb = zBase + (row + 1) * ROW_PITCH - 0.05;
-    const x0 = -1.2, x1 = (N_RACKS - 1) * RACK_PITCH + RACK_W + 1.2;
-    const isCold = (row % 2 === 0);
-    aisleStrip(x0, za, x1, zb, isCold ? 0x002266 : 0x440000, 0.22);
+for (var rm = 0; rm < 2; rm++) {{
+  var xOff = rm === 0 ? 0 : ROOM_B_X;
+  var xa = xOff - 0.3, xb = xOff + (N_RACKS_C-1)*RACK_PITCH + RACK_W + 0.3;
+  for (var ro = 0; ro < N_ROWS_C - 1; ro++) {{
+    var za = ro*ROW_PITCH + RACK_D + 0.05;
+    var zb = (ro+1)*ROW_PITCH - 0.05;
+    aisleStrip(xa, za, xb, zb, ro%2===0 ? 0x002266 : 0x550000, 0.12);
   }}
 }}
 
 // ── Temperature → colour ──────────────────────────────────────────────────────
 function tempColor(t) {{
-  const stops = [
-    [16, [0,  68, 187]],
-    [22, [0, 153, 204]],
-    [27, [0, 204, 136]],
-    [31, [255,170,  0]],
-    [35, [255, 85,  0]],
-    [38, [255, 17, 17]],
+  var stops = [
+    [16, [0,102,255]],[20,[0,204,170]],[24,[0,204,68]],
+    [27,[255,170,0]],[30,[255,102,0]],[33,[255,34,0]],[40,[255,0,0]]
   ];
-  for (let i = 0; i < stops.length - 1; i++) {{
-    const [t0, c0] = stops[i];
-    const [t1, c1] = stops[i + 1];
+  for (var i = 0; i < stops.length-1; i++) {{
+    var t0=stops[i][0], c0=stops[i][1], t1=stops[i+1][0], c1=stops[i+1][1];
     if (t <= t1) {{
-      const f = (t - t0) / (t1 - t0);
-      return new THREE.Color(
-        (c0[0] + f * (c1[0] - c0[0])) / 255,
-        (c0[1] + f * (c1[1] - c0[1])) / 255,
-        (c0[2] + f * (c1[2] - c0[2])) / 255,
-      );
+      var f = (t-t0)/(t1-t0);
+      return new THREE.Color((c0[0]+f*(c1[0]-c0[0]))/255,(c0[1]+f*(c1[1]-c0[1]))/255,(c0[2]+f*(c1[2]-c0[2]))/255);
     }}
   }}
-  return new THREE.Color(1, 0.07, 0.07);
+  return new THREE.Color(1,0,0);
 }}
 
-// ── Build rack boxes ──────────────────────────────────────────────────────────
-const rackMeshes  = [];
-const hotRacks    = [];   // racks above 28°C — will pulse
-const GEO_CACHE   = {{}};  // reuse geometry for same height bucket
+// ── Rack meshes ───────────────────────────────────────────────────────────────
+var sharedRackGeo  = new THREE.BoxGeometry(RACK_W, 1.0, RACK_D);
+var sharedEdgesGeo = new THREE.EdgesGeometry(sharedRackGeo);
+var rackMap = {{}};
+var rayTargets = [];
+var hotRacks = [], critRacks = [];
 
-RACKS.forEach(r => {{
-  const h    = MIN_H + Math.max(0, Math.min(r.power, 20)) / 20 * (MAX_H - MIN_H);
-  const hKey = Math.round(h * 10);
-  if (!GEO_CACHE[hKey])
-    GEO_CACHE[hKey] = new THREE.BoxGeometry(RACK_W, h, RACK_D);
-
-  const geo  = GEO_CACHE[hKey];
-  const col  = tempColor(r.temp);
-  const emis = col.clone().multiplyScalar(r.temp > 28 ? 0.25 : 0.06);
-
-  const mat  = new THREE.MeshLambertMaterial({{
-    color:    col,
-    emissive: emis,
-  }});
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(r.x + RACK_W / 2, h / 2, r.z + RACK_D / 2);
+RACKS.forEach(function(r) {{
+  var h = Math.max(MIN_H, Math.min(r.power,20)/20 * MAX_H);
+  var col  = tempColor(r.temp);
+  var emis = r.temp > 28 ? col.clone().multiplyScalar(0.18) : new THREE.Color(0x020508);
+  var mat  = new THREE.MeshLambertMaterial({{ color: col, emissive: emis }});
+  var mesh = new THREE.Mesh(sharedRackGeo, mat);
+  mesh.scale.y = h;
+  mesh.position.set(r.x + RACK_W/2, h/2, r.z + RACK_D/2);
   mesh.castShadow = mesh.receiveShadow = true;
-  mesh.userData   = r;
+  mesh.userData = r;
+  mesh.userData.origH = h;
   scene.add(mesh);
-  rackMeshes.push(mesh);
+  rayTargets.push(mesh);
+  rackMap[r.id] = {{ mesh: mesh }};
 
-  // Wire edges
-  const edges = new THREE.EdgesGeometry(geo);
-  const wire  = new THREE.LineSegments(
-    edges,
-    new THREE.LineBasicMaterial({{ color: 0x1a3050 }})
-  );
-  mesh.add(wire);
-
-  if (r.temp > 28) hotRacks.push(mesh);
-}});
-
-// ── Build CRAC boxes ──────────────────────────────────────────────────────────
-const cracGeo = new THREE.BoxGeometry(CRAC_W, CRAC_H, CRAC_D);
-CRACS.forEach(c => {{
-  const mat  = new THREE.MeshLambertMaterial({{
-    color:    0x005577,
-    emissive: 0x002233,
-  }});
-  const mesh = new THREE.Mesh(cracGeo, mat);
-  mesh.position.set(c.x + CRAC_W / 2, CRAC_H / 2, c.z + CRAC_D / 2);
-  mesh.castShadow = mesh.receiveShadow = true;
-  mesh.userData   = c;
-  scene.add(mesh);
-  rackMeshes.push(mesh);   // include in raycasting
-
-  const edges = new THREE.EdgesGeometry(cracGeo);
+  // Normal edge wireframe
   mesh.add(new THREE.LineSegments(
-    edges,
-    new THREE.LineBasicMaterial({{ color: 0x006688 }})
+    sharedEdgesGeo,
+    new THREE.LineBasicMaterial({{ color: 0xffffff, transparent: true, opacity: 0.15 }})
   ));
+
+  // Alert edge overlay
+  if (r.temp > 28 || r.power > 17) {{
+    var ac = r.temp > 32 ? 0xff0000 : r.power > 17 && r.temp <= 28 ? 0xffaa00 : 0xff4444;
+    var alertMat = new THREE.LineBasicMaterial({{ color: ac }});
+    var alertEdge = new THREE.LineSegments(sharedEdgesGeo, alertMat);
+    mesh.add(alertEdge);
+    rackMap[r.id].alertEdge = alertEdge;
+  }}
+  if (r.temp > 28) hotRacks.push(rackMap[r.id]);
+  if (r.temp > 32) critRacks.push(mesh);
 }});
 
-// ── Stats overlay ─────────────────────────────────────────────────────────────
-if (RACKS.length > 0) {{
-  const temps  = RACKS.map(r => r.temp);
-  const powers = RACKS.map(r => r.power);
-  const itLoad = powers.reduce((a,b) => a+b, 0);
-  const avg    = temps.reduce((a,b)=>a+b,0) / temps.length;
-  const mx     = Math.max(...temps);
-  const mn     = Math.min(...temps);
-  const hotR   = RACKS.reduce((a,b) => b.temp > a.temp ? b : a, RACKS[0]);
-  document.getElementById('s-it').textContent  = itLoad.toFixed(1) + ' kW';
-  document.getElementById('s-avg').textContent = avg.toFixed(1) + '°C';
-  document.getElementById('s-max').textContent = mx.toFixed(1) + '°C';
-  document.getElementById('s-min').textContent = mn.toFixed(1) + '°C';
-  document.getElementById('s-hid').textContent = hotR.id;
-}}
+// ── CRAC boxes ────────────────────────────────────────────────────────────────
+var cracGeo      = new THREE.BoxGeometry(CRAC_W, 1.0, CRAC_D);
+var cracEdgesGeo = new THREE.EdgesGeometry(cracGeo);
 
-// ── Tooltip / raycasting ──────────────────────────────────────────────────────
-const raycaster = new THREE.Raycaster();
-const mouse     = new THREE.Vector2();
-const tooltip   = document.getElementById('tooltip');
-let   hovered   = null;
+CRACS.forEach(function(c) {{
+  var mat  = new THREE.MeshLambertMaterial({{ color: 0x00ccaa, emissive: 0x003322 }});
+  var mesh = new THREE.Mesh(cracGeo, mat);
+  mesh.scale.y = CRAC_H;
+  mesh.position.set(c.x, CRAC_H/2, c.z);
+  mesh.castShadow = true;
+  mesh.userData = c;
+  scene.add(mesh);
+  rayTargets.push(mesh);
 
-function onMouseMove(e) {{
-  const rect = renderer.domElement.getBoundingClientRect();
-  mouse.x =  ((e.clientX - rect.left)  / W) * 2 - 1;
-  mouse.y = -((e.clientY - rect.top)   / H) * 2 + 1;
+  mesh.add(new THREE.LineSegments(
+    cracEdgesGeo,
+    new THREE.LineBasicMaterial({{ color: 0x00aa88, transparent: true, opacity: 0.7 }})
+  ));
 
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(rackMeshes);
+  var pl = new THREE.PointLight(0x00ccaa, 0.28, 8);
+  pl.position.set(c.x, 1.6, c.z);
+  scene.add(pl);
+}});
 
+// ── Raycaster / tooltip ───────────────────────────────────────────────────────
+var raycaster = new THREE.Raycaster();
+var mouseVec  = new THREE.Vector2();
+var tooltip   = document.getElementById('tooltip');
+
+renderer.domElement.addEventListener('mousemove', function(e) {{
+  var rect = renderer.domElement.getBoundingClientRect();
+  mouseVec.x = ((e.clientX - rect.left) / W) * 2 - 1;
+  mouseVec.y = -((e.clientY - rect.top) / H_VIEW) * 2 + 1;
+  raycaster.setFromCamera(mouseVec, camera);
+  var hits = raycaster.intersectObjects(rayTargets);
   if (hits.length > 0) {{
-    const d = hits[0].object.userData;
-    if (d.id) {{
-      const isCrac = !!d.supply;
-      tooltip.style.display = 'block';
-      tooltip.style.left    = (e.clientX - rect.left + 14) + 'px';
-      tooltip.style.top     = (e.clientY - rect.top  - 10) + 'px';
-      if (isCrac) {{
-        tooltip.innerHTML =
-          `<b>${{d.id}}</b><br>` +
-          `Supply: ${{d.supply.toFixed(1)}}°C &nbsp; Return: ${{d.ret.toFixed(1)}}°C<br>` +
-          `ΔT: <span class="tc">${{d.dt.toFixed(1)}}°C</span> &nbsp; Cooling: ${{d.cooling.toFixed(1)}} kW<br>` +
-          `${{d.room}}`;
-      }} else {{
-        const cls = d.temp > 30 ? 'th' : 'tc';
-        tooltip.innerHTML =
-          `<b>${{d.id}}</b><br>` +
-          `Inlet: <span class="${{cls}}">${{d.temp.toFixed(1)}}°C</span> &nbsp;` +
-          `Outlet: ${{d.outlet.toFixed(1)}}°C<br>` +
-          `Power: ${{d.power.toFixed(1)}} kW &nbsp; Humid: ${{d.humid.toFixed(0)}}%<br>` +
-          `ASHRAE: ${{d.ashrae}}<br>` +
-          `${{d.room}} · ${{d.row}}`;
-      }}
+    var d = hits[0].object.userData;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX - rect.left + 14) + 'px';
+    tooltip.style.top  = (e.clientY - rect.top  - 10) + 'px';
+    if (d.supply !== undefined) {{
+      tooltip.innerHTML = '<b>' + d.id + '</b>' + (d.real_id && d.real_id !== d.id ? ' (' + d.real_id + ')' : '') + '<br>' +
+        'Supply: ' + d.supply.toFixed(1) + '&deg;C &nbsp; Return: ' + d.ret.toFixed(1) + '&deg;C<br>' +
+        '&Delta;T: ' + d.dt.toFixed(1) + '&deg;C &nbsp; Cooling: ' + d.cooling.toFixed(1) + ' kW';
+    }} else {{
+      var cls = d.temp > 30 ? 't-hot' : 't-cool';
+      tooltip.innerHTML =
+        '<b>' + d.id + '</b><br>' +
+        'Inlet: <span class="' + cls + '">' + d.temp.toFixed(1) + '&deg;C</span> &nbsp; Outlet: ' + d.outlet.toFixed(1) + '&deg;C<br>' +
+        'Power: ' + d.power.toFixed(1) + ' kW<br>' +
+        'ASHRAE: ' + (d.ashrae||'—') + '<br>' +
+        d.room + ' &middot; ' + d.row;
     }}
   }} else {{
     tooltip.style.display = 'none';
   }}
+}});
+renderer.domElement.addEventListener('mouseleave', function() {{ tooltip.style.display = 'none'; }});
+
+// ── Live polling ──────────────────────────────────────────────────────────────
+var lastHash  = '';
+var apiErrDiv = document.getElementById('api-error');
+var updDiv    = document.getElementById('updated');
+
+function hashData(data) {{
+  if (!data || !data.racks) return '';
+  return data.racks.map(function(r) {{
+    return r.asset_id + ':' + r.inlet_temp_c.toFixed(1) + ':' + r.power_kw.toFixed(1);
+  }}).join('|');
 }}
-renderer.domElement.addEventListener('mousemove', onMouseMove);
+
+function applyUpdate(racks) {{
+  racks.forEach(function(r) {{
+    var entry = rackMap[r.asset_id];
+    if (!entry) return;
+    var mesh = entry.mesh;
+    var newH = Math.max(MIN_H, Math.min(r.power_kw,20)/20 * MAX_H);
+    mesh.scale.y = newH;
+    mesh.position.y = newH / 2;
+    mesh.userData.temp  = r.inlet_temp_c;
+    mesh.userData.power = r.power_kw;
+    mesh.userData.origH = newH;
+    mesh.material.color = tempColor(r.inlet_temp_c);
+  }});
+  updDiv.textContent = 'Last updated: ' + new Date().toLocaleTimeString();
+}}
+
+function poll() {{
+  var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  var tid  = ctrl ? setTimeout(function(){{ ctrl.abort(); }}, 4000) : null;
+  var opts = ctrl ? {{ signal: ctrl.signal }} : {{}};
+  fetch('http://localhost:8000/telemetry/live', opts)
+    .then(function(r) {{
+      if (tid) clearTimeout(tid);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }})
+    .then(function(data) {{
+      var h = hashData(data);
+      if (h !== lastHash) {{ lastHash = h; applyUpdate(data.racks || []); }}
+      apiErrDiv.style.display = 'none';
+    }})
+    .catch(function() {{
+      if (tid) clearTimeout(tid);
+      apiErrDiv.style.display = 'block';
+    }});
+}}
+setInterval(poll, 5000);
+
+// ── World → screen ────────────────────────────────────────────────────────────
+function w2s(wx, wy, wz) {{
+  var v = new THREE.Vector3(wx, wy, wz);
+  v.project(camera);
+  return {{ left: (v.x+1)/2*W, top: (-v.y+1)/2*H_VIEW, behind: v.z > 1 }};
+}}
+
+// ── Room labels ───────────────────────────────────────────────────────────────
+var rlA = document.getElementById('rl-a');
+var rlB = document.getElementById('rl-b');
+setTimeout(function() {{ rlA.style.display = 'block'; rlB.style.display = 'block'; }}, 200);
 
 // ── Animation loop ────────────────────────────────────────────────────────────
-const clock = new THREE.Clock();
+var clock = new THREE.Clock();
+
 function animate() {{
   requestAnimationFrame(animate);
-  controls.update();
+  var t = clock.getElapsedTime();
 
-  // Pulse glow on hot racks
-  const t = clock.getElapsedTime();
-  hotRacks.forEach(mesh => {{
-    const base  = tempColor(mesh.userData.temp);
-    const pulse = 0.18 + 0.18 * Math.sin(t * 2.6 + mesh.position.x);
-    mesh.material.emissive = base.clone().multiplyScalar(pulse);
+  // Auto-rotate management
+  if (autoRot) {{
+    sph.theta += 0.003;
+    updateCam();
+  }} else if (Date.now() - lastActivity > 3000) {{
+    autoRot = true;
+  }}
+
+  // Pulse hot rack edges
+  hotRacks.forEach(function(item) {{
+    if (!item.alertEdge) return;
+    var isC = item.mesh.userData.temp > 32;
+    var p = 0.5 + 0.5 * Math.sin(t * 3.0 + item.mesh.position.x);
+    item.alertEdge.material.color = isC
+      ? new THREE.Color(1, p * 0.15, 0)
+      : new THREE.Color(1, p * 0.35, 0);
   }});
+
+  // Breathing on critical racks
+  critRacks.forEach(function(mesh) {{
+    var b = 1 + 0.03 * Math.sin(t * 2.6 + mesh.position.z);
+    mesh.scale.y = mesh.userData.origH * b;
+    mesh.position.y = mesh.userData.origH * b / 2;
+  }});
+
+  // Update room label screen positions
+  var pA = w2s({room_a_cx:.2f}, 4.5, {room_cz:.2f});
+  var pB = w2s({room_b_cx:.2f}, 4.5, {room_cz:.2f});
+  rlA.style.left = pA.left + 'px'; rlA.style.top = pA.top + 'px';
+  rlB.style.left = pB.left + 'px'; rlB.style.top = pB.top + 'px';
+  rlA.style.opacity = pA.behind ? '0' : '1';
+  rlB.style.opacity = pB.behind ? '0' : '1';
 
   renderer.render(scene, camera);
 }}
 animate();
+
+// Initial data timestamp
+if (RACKS.length > 0) updDiv.textContent = 'Last updated: ' + new Date().toLocaleTimeString();
 </script>
 </body>
 </html>"""

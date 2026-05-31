@@ -540,6 +540,17 @@ st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
 
 section_header("Data Center Floor Visualization", "🏗️")
 
+# Info bar — always visible
+_refresh_s = refresh_interval
+st.markdown(
+    f'<div style="font-size:0.75rem;color:#3a5a7a;padding:4px 0 6px 2px;'
+    f'letter-spacing:0.04em;">'
+    f"80 racks &nbsp;·&nbsp; 8 CRAC units &nbsp;·&nbsp; 2 rooms &nbsp;·&nbsp; "
+    f"Live data &nbsp;·&nbsp; Refreshes every {_refresh_s}s"
+    f"</div>",
+    unsafe_allow_html=True,
+)
+
 tab_2d, tab_3d_plotly, tab_3d_webgl = st.tabs([
     "📊  2D Heatmap",
     "📦  3D Plotly",
