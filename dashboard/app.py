@@ -234,6 +234,14 @@ section[data-testid="stSidebar"] * {
 div[data-testid="stMetricValue"] { color: #1a1a1a !important; }
 div[data-testid="stExpander"] { background: #ebebeb; border: 1px solid #1a3050; border-radius: 6px; }
 
+/* ── st.info / st.warning / st.error boxes ─ */
+div[data-testid="stAlert"]                   { color: #1a1a1a !important; }
+div[data-testid="stAlert"] *                 { color: #1a1a1a !important; }
+div[data-testid="stNotification"]            { color: #1a1a1a !important; }
+div[data-testid="stNotification"] *          { color: #1a1a1a !important; }
+div[data-testid="stAlertContainer"]          { color: #1a1a1a !important; }
+div[data-testid="stAlertContainer"] *        { color: #1a1a1a !important; }
+
 /* ── Markdown / native Streamlit text ───── */
 div[data-testid="stMarkdownContainer"],
 div[data-testid="stMarkdownContainer"] p,
