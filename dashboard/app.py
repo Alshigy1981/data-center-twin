@@ -234,6 +234,20 @@ section[data-testid="stSidebar"] * {
 div[data-testid="stMetricValue"] { color: #1a1a1a !important; }
 div[data-testid="stExpander"] { background: #ebebeb; border: 1px solid #1a3050; border-radius: 6px; }
 
+/* ── Markdown / native Streamlit text ───── */
+div[data-testid="stMarkdownContainer"],
+div[data-testid="stMarkdownContainer"] p,
+div[data-testid="stMarkdownContainer"] li,
+div[data-testid="stMarkdownContainer"] strong,
+div[data-testid="stMarkdownContainer"] em,
+div[data-testid="stMarkdownContainer"] h1,
+div[data-testid="stMarkdownContainer"] h2,
+div[data-testid="stMarkdownContainer"] h3 { color: #1a1a1a !important; }
+div[data-testid="stText"] { color: #1a1a1a !important; }
+div[data-testid="stCaptionContainer"] { color: #444444 !important; }
+label[data-testid="stWidgetLabel"],
+div[data-testid="stWidgetLabel"] { color: #1a1a1a !important; }
+
 /* ── Sidebar input overrides ────────────── */
 .stSelectbox > div > div          { background-color: #e8e8e8 !important; color: #1a1a1a !important; border: 1px solid #cccccc !important; }
 .stNumberInput > div > div > input { background-color: #e8e8e8 !important; color: #1a1a1a !important; border: 1px solid #cccccc !important; }
@@ -426,7 +440,7 @@ if not api_ok:
 col_title, col_status = st.columns([5, 1])
 with col_title:
     st.markdown(
-        '<h1 style="color:#e0f0ff;font-size:1.6rem;margin:0;padding:0;font-weight:700;">'
+        '<h1 style="color:#1a1a1a;font-size:1.6rem;margin:0;padding:0;font-weight:700;">'
         "⚡ Data Center Digital Twin — Operations Center"
         "</h1>",
         unsafe_allow_html=True,
