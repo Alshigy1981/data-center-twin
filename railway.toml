@@ -1,20 +1,10 @@
 [build]
-builder = "nixpacks"
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile.backend"
 
-[[services]]
-name = "backend"
-source = "backend"
-
-[services.deploy]
-startCommand = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+[deploy]
+startCommand = "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
 healthcheckPath = "/health"
-healthcheckTimeout = 30
-
-[[services]]
-name = "dashboard"
-source = "dashboard"
-
-[services.deploy]
-startCommand = "streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true"
-healthcheckPath = "/_stcore/health"
-healthcheckTimeout = 30
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
