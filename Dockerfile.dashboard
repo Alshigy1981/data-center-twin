@@ -1,0 +1,45 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install only dashboard dependencies (no torch needed)
+RUN pip install --no-cache-dir \
+    streamlit \
+    plotly \
+    pandas \
+    numpy \
+    httpx \
+    python-dotenv \
+    pyyaml \
+    requests
+
+# Copy dashboard code
+COPY dashboard/ ./dashboard/
+COPY .env.example .env
+
+# Expose port
+EXPOSE 8501
+
+# Streamlit config
+RUN mkdir -p /app/.streamlit
+RUN echo '[server]\nheadless = true\naddress = "0.0.0.0"\nport = 8501\nenableCORS = false\nenableXsrfProtection = false' \
+    > /app/.streamlit/config.toml
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD curl -f http://localhost:8501/_stcore/health || exit 1
+
+# Start command
+CMD ["streamlit", "run", "dashboard/app.py", \
+     "--server.port", "8501", \
+     "--server.address", "0.0.0.0", \
+     "--server.headless", "true"]

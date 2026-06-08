@@ -24,9 +24,18 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from stable_baselines3 import PPO
+
+try:
+    import torch  # noqa: F401
+    from stable_baselines3 import PPO
+    TORCH_AVAILABLE = True
+except ImportError:
+    PPO = None  # type: ignore[assignment,misc]
+    TORCH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+if not TORCH_AVAILABLE:
+    logger.warning("PyTorch not available — PPO agent using rule-based fallback")
 
 # ─── Asset configuration ──────────────────────────────────────────────────────
 
@@ -180,12 +189,14 @@ class MaintenanceAgent:
     def __init__(self) -> None:
         self._env = DataCenterMaintenanceEnv()
         self._env.reset()
-        self._model: Optional[PPO] = None
+        self._model: Optional[Any] = None
         self._lock = threading.Lock()
         self._training_steps = 0
         self._load_if_exists()
 
     def _load_if_exists(self) -> None:
+        if not TORCH_AVAILABLE:
+            return
         if _MODEL_PATH.exists():
             try:
                 self._model = PPO.load(str(_MODEL_PATH), env=self._env)
@@ -195,6 +206,13 @@ class MaintenanceAgent:
 
     def train(self, total_timesteps: int = 50_000) -> Dict[str, Any]:
         """Train (or continue training) the PPO policy. Saves model after training."""
+        if not TORCH_AVAILABLE:
+            return {
+                "status": "unavailable",
+                "reason": "PyTorch not installed — install requirements.torch.txt to enable PPO training",
+                "total_timesteps": 0,
+                "model_path": str(_MODEL_PATH),
+            }
         with self._lock:
             if self._model is None:
                 self._model = PPO(

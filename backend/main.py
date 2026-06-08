@@ -128,9 +128,18 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+# Allow localhost for dev + Railway-injected URLs for production
+_ALLOWED_ORIGINS = [
+    "http://localhost:8501",
+    "http://127.0.0.1:8501",
+    os.getenv("DASHBOARD_URL", ""),
+    os.getenv("RAILWAY_STATIC_URL", ""),
+]
+_ALLOWED_ORIGINS = [o for o in _ALLOWED_ORIGINS if o]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS or ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

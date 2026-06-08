@@ -29,7 +29,15 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 load_dotenv()
 
-DB_PATH = os.getenv("DB_PATH", "./data_center.db")
+# Use Railway volume mount if available, else fall back to env var or local default.
+# On Railway free tier, add a Volume and set RAILWAY_VOLUME_MOUNT_PATH to persist the DB.
+_DATA_DIR = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", None)
+if _DATA_DIR:
+    os.makedirs(_DATA_DIR, exist_ok=True)
+    DB_PATH = os.path.join(_DATA_DIR, "dc_twin.db")
+else:
+    DB_PATH = os.getenv("DB_PATH", "./data_center.db")
+
 DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(

@@ -4,6 +4,7 @@ __pycache__/
 *.db-shm
 *.db-wal
 .env
+!.env.example
 *.egg-info/
 dist/
 # Ignore PyInstaller artefacts inside build/ but keep source spec + scripts
@@ -15,3 +16,6 @@ build/xref-*.html
 .DS_Store
 .claude/
 .venv/
+data/
+.streamlit/secrets.toml
+assets/tb_logs/
