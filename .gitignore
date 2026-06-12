@@ -19,3 +19,4 @@ build/xref-*.html
 data/
 .streamlit/secrets.toml
 assets/tb_logs/
+logs/
