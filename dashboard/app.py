@@ -1804,7 +1804,8 @@ st.markdown(
 section_header("24-Hour Asset Wear Forecast", "📈")
 
 _forecasts = lstm_forecast_data.get("forecasts", []) if lstm_forecast_data else []
-_risk_map = {e.get("asset_id"): e for e in (_risk_data if isinstance(_risk_data := lstm_risk_data, list) else [])}
+_risk_data = lstm_risk_data if isinstance(lstm_risk_data, list) else []
+_risk_map = {e.get("asset_id"): e for e in _risk_data}
 
 if _forecasts:
     _rows = [_forecasts[i:i+4] for i in range(0, len(_forecasts), 4)]
@@ -1863,6 +1864,10 @@ if _forecasts:
                 _wear_dir_color = "#ff6666" if _pred24 > _cur_wear else "#00cc88"
                 _fail_str = f"⚠ {_hrs_fail:.0f}h to failure" if _hrs_fail and _hrs_fail < 168 else ""
 
+                _fail_div = (
+                    f'<div style="color:#ff6666;font-size:0.68rem;margin-top:2px;">{_fail_str}</div>'
+                    if _fail_str else ""
+                )
                 st.markdown(
                     f'<div style="background:#0f1923;border:1px solid #1a3050;border-radius:5px;'
                     f'padding:8px 10px;margin-top:-8px;">'
@@ -1873,7 +1878,7 @@ if _forecasts:
                     f'<span style="background:{_rc};color:#000;font-size:0.62rem;font-weight:700;'
                     f'padding:1px 6px;border-radius:3px;">{_risk}</span>'
                     f'</div>'
-                    f'{"<div style=\\"color:#ff6666;font-size:0.68rem;margin-top:2px;\\">" + _fail_str + "</div>" if _fail_str else ""}'
+                    f'{_fail_div}'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
