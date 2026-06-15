@@ -13,6 +13,7 @@ import logging
 import os
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -47,10 +48,12 @@ from backend.metrics import (
 from backend.models import (
     Alert,
     AlertSeverity,
+    AssetForecast,
     AssetInventory,
     AssetRiskEntry,
     BindingConstraint,
     DemandStatus,
+    ForecastComparison,
     HourlyRate,
     MigrationRecommendation,
     MonthlyBillProjection,
@@ -62,10 +65,12 @@ from backend.models import (
     PreCoolingAction,
     PreCoolingSchedule,
     RackScore,
+    RiskTimelineEntry,
     SavingsSummary,
     ScheduledLoad,
     ThermalPreview,
     UnifiedOptimizationPlan,
+    WorldModelStatus,
     CarbonMetrics,
     ChillerAsset,
     ChillerTelemetry,
@@ -110,7 +115,11 @@ logger = logging.getLogger(__name__)
 
 APP_VERSION = os.getenv("APP_VERSION", "1.0.0")
 SIMULATION_INTERVAL = int(os.getenv("SIMULATION_INTERVAL", "30"))
+_LSTM_ENABLED = os.getenv("LSTM_ENABLED", "true").lower() == "true"
 _start_time = time.time()
+
+# LSTM world model (set on startup if enabled)
+_world_model: Optional[Any] = None
 
 # ─────────────────────────────────────────
 # Application factory
@@ -166,15 +175,58 @@ def _get_inventory() -> AssetInventory:
 @app.on_event("startup")
 async def on_startup() -> None:
     """Initialise database and start background simulation thread."""
-    global _weather_adapter
+    import threading
+    global _weather_adapter, _world_model
+
     start_simulation(interval=SIMULATION_INTERVAL)
     logger.info("DC Twin API started.  Simulation interval: %ds", SIMULATION_INTERVAL)
+
     if os.getenv("OPEN_METEO_ENABLED", "true").lower() == "true":
         _weather_adapter = OpenMeteoAdapter()
         logger.info(
             "Open-Meteo weather adapter initialized for %s",
             os.getenv("LOCATION_NAME", "Chicago, IL"),
         )
+
+    # ── LSTM World Model ──────────────────────────────────────────────────────
+    if _LSTM_ENABLED:
+        try:
+            from backend.lstm.world_model import WorldModel
+            _world_model = WorldModel()
+
+            model_path = Path("models/lstm_world_model.pt")
+            if not model_path.exists():
+                logger.info("No saved LSTM model found — pre-training in background thread…")
+                _world_model._training_status = "training"
+
+                def _pretrain() -> None:
+                    try:
+                        from backend.lstm.trainer import LSTMTrainer
+                        trainer = LSTMTrainer(_world_model.forecaster.model)
+                        result = trainer.pretrain_on_simulator(
+                            n_steps=int(os.getenv("LSTM_PRETRAIN_STEPS", "10000"))
+                        )
+                        # Reload trained weights into the forecaster's model
+                        import torch
+                        state = torch.load(str(trainer.model_path), map_location="cpu", weights_only=True)
+                        _world_model.forecaster.model.load_state_dict(state)
+                        _world_model.forecaster.model.eval()
+                        _world_model._training_status = "complete"
+                        _world_model._model_accuracy = result.get("val_mae", 0.0)
+                        logger.info("LSTM pre-training complete — val_mae=%.4f", result.get("val_mae", 0.0))
+                    except Exception as exc:
+                        logger.error("LSTM pre-training failed: %s", exc, exc_info=True)
+                        _world_model._training_status = "error"
+
+                t = threading.Thread(target=_pretrain, daemon=True, name="lstm-pretrain")
+                t.start()
+            else:
+                _world_model._training_status = "complete"
+                logger.info("LSTM World Model initialized from saved weights")
+
+        except Exception as exc:
+            logger.warning("LSTM World Model unavailable: %s", exc)
+            _world_model = None
 
 
 # ─────────────────────────────────────────
@@ -299,6 +351,13 @@ def telemetry_live(db: Session = Depends(get_db)) -> TelemetrySnapshot:
             })
         except Exception as exc:
             logger.warning("Weather patch failed, using simulated value: %s", exc)
+
+    # Feed LSTM forecaster history
+    if _world_model is not None:
+        try:
+            _world_model.forecaster.update_history(snapshot)
+        except Exception:
+            pass
 
     return snapshot
 
@@ -947,6 +1006,165 @@ def optimizer_savings_summary():
     cooling_kw = sum(c.cooling_load_kw for c in snap.cracs) if snap and snap.cracs else 100.0
     facility_kw = it_kw + cooling_kw + it_kw * 0.05
     return SavingsSummary(**coordinator.get_savings_summary(snap, it_kw, facility_kw))
+
+
+# ─────────────────────────────────────────
+# LSTM World Model Endpoints
+# ─────────────────────────────────────────
+
+def _require_world_model() -> Any:
+    if _world_model is None:
+        raise HTTPException(
+            status_code=503,
+            detail="LSTM World Model is disabled or not yet initialized.",
+        )
+    return _world_model
+
+
+@app.get("/lstm/status", response_model=WorldModelStatus, tags=["LSTM World Model"])
+def lstm_status() -> WorldModelStatus:
+    """World model health and readiness."""
+    wm = _require_world_model()
+    status = wm.get_world_model_status()
+    return WorldModelStatus(**status)
+
+
+@app.get("/lstm/forecast", tags=["LSTM World Model"])
+def lstm_forecast_all() -> Dict[str, Any]:
+    """24-hour forecast for all 12 critical assets."""
+    wm = _require_world_model()
+    result = wm.forecaster.forecast()
+    risk_timeline = wm.forecaster.get_risk_timeline()
+
+    from backend.lstm.feature_engineer import ASSET_IDS, ASSET_TYPES
+
+    forecasts_out: List[Dict[str, Any]] = []
+    for aid in ASSET_IDS:
+        preds = result["forecasts"].get(aid, [[0.5] * 8] * 24)
+        conf = result["confidence"].get(aid, 0.0)
+        hours = result["predicted_failure_hours"].get(aid)
+        attn = result["attention_weights"].get(aid, [1.0 / 48] * 48)
+
+        wear_preds = [float(preds[h][5]) if hasattr(preds[0], '__len__') else float(preds[h, 5])
+                      for h in range(len(preds))]
+        temp_preds = [float(preds[h][0]) if hasattr(preds[0], '__len__') else float(preds[h, 0])
+                      for h in range(len(preds))]
+
+        from backend.lstm.forecaster import _risk_level
+        forecasts_out.append({
+            "asset_id": aid,
+            "asset_type": ASSET_TYPES.get(aid, ""),
+            "forecast_horizon_hours": 24,
+            "predicted_wear_scores": wear_preds,
+            "predicted_temps": temp_preds,
+            "confidence_scores": [float(conf)] * 24,
+            "current_wear": float(wear_preds[0]) if wear_preds else 0.0,
+            "predicted_wear_24h": float(wear_preds[-1]) if wear_preds else 0.0,
+            "hours_to_failure": float(hours) if hours is not None else None,
+            "risk_level": _risk_level(hours),
+            "attention_weights": [float(w) for w in (attn.tolist() if hasattr(attn, 'tolist') else attn)],
+        })
+
+    return {
+        "forecasts": forecasts_out,
+        "risk_timeline": risk_timeline,
+        "lstm_ready": wm.forecaster.is_healthy(),
+        "timestamp": result.get("timestamp", datetime.utcnow()).isoformat()
+        if hasattr(result.get("timestamp"), "isoformat") else str(result.get("timestamp")),
+    }
+
+
+@app.get("/lstm/forecast/{asset_id}", tags=["LSTM World Model"])
+def lstm_forecast_asset(asset_id: str) -> Dict[str, Any]:
+    """24-hour forecast for a specific asset."""
+    wm = _require_world_model()
+    result = wm.forecaster.forecast(asset_id=asset_id)
+    preds = result["forecasts"].get(asset_id)
+    if preds is None:
+        raise HTTPException(status_code=404, detail=f"Asset {asset_id} not found.")
+
+    attn = result["attention_weights"].get(asset_id, [])
+    hours = result["predicted_failure_hours"].get(asset_id)
+    conf = result["confidence"].get(asset_id, 0.0)
+
+    from backend.lstm.forecaster import _risk_level
+    return {
+        "asset_id": asset_id,
+        "predicted_wear_scores": [float(preds[h, 5]) for h in range(len(preds))],
+        "predicted_temps": [float(preds[h, 0]) for h in range(len(preds))],
+        "confidence": float(conf),
+        "attention_weights": [float(w) for w in (attn.tolist() if hasattr(attn, 'tolist') else attn)],
+        "hours_to_failure": float(hours) if hours is not None else None,
+        "risk_level": _risk_level(hours),
+        "timestamp": result.get("timestamp", datetime.utcnow()).isoformat()
+        if hasattr(result.get("timestamp"), "isoformat") else str(result.get("timestamp")),
+    }
+
+
+@app.get("/lstm/accuracy", tags=["LSTM World Model"])
+def lstm_accuracy() -> Dict[str, Any]:
+    """LSTM model evaluation metrics."""
+    wm = _require_world_model()
+    if not wm.forecaster.is_healthy():
+        return {
+            "overall_accuracy_score": 0.0,
+            "message": "Model warming up — run /lstm/status to check readiness",
+        }
+    return {
+        "overall_accuracy_score": wm._model_accuracy,
+        "training_status": wm._training_status,
+        "message": "Accuracy improves as model trains on live simulation data",
+    }
+
+
+@app.get("/lstm/risk-timeline", response_model=List[RiskTimelineEntry], tags=["LSTM World Model"])
+def lstm_risk_timeline() -> List[RiskTimelineEntry]:
+    """Assets sorted by predicted failure urgency."""
+    wm = _require_world_model()
+    timeline = wm.forecaster.get_risk_timeline()
+    return [RiskTimelineEntry(**entry) for entry in timeline]
+
+
+@app.get("/lstm/compare-decisions", tags=["LSTM World Model"])
+def lstm_compare_decisions() -> Dict[str, Any]:
+    """PPO decision comparison with and without LSTM world model."""
+    wm = _require_world_model()
+    snap = get_last_snapshot()
+    return wm.compare_decisions(telemetry=snap)
+
+
+@app.post("/lstm/retrain", tags=["LSTM World Model"])
+def lstm_retrain() -> Dict[str, Any]:
+    """Trigger background retraining on latest simulated data."""
+    import threading
+    wm = _require_world_model()
+
+    if wm._training_status == "training":
+        return {"status": "already_training", "eta_seconds": 120}
+
+    wm._training_status = "training"
+
+    def _retrain() -> None:
+        try:
+            from backend.lstm.trainer import LSTMTrainer
+            trainer = LSTMTrainer(wm.forecaster.model)
+            result = trainer.pretrain_on_simulator(
+                n_steps=int(os.getenv("LSTM_PRETRAIN_STEPS", "10000"))
+            )
+            import torch
+            state = torch.load(str(trainer.model_path), map_location="cpu", weights_only=True)
+            wm.forecaster.model.load_state_dict(state)
+            wm.forecaster.model.eval()
+            wm._training_status = "complete"
+            wm._model_accuracy = result.get("val_mae", 0.0)
+            logger.info("LSTM retrain complete — val_mae=%.4f", result.get("val_mae", 0.0))
+        except Exception as exc:
+            logger.error("LSTM retrain failed: %s", exc, exc_info=True)
+            wm._training_status = "error"
+
+    t = threading.Thread(target=_retrain, daemon=True, name="lstm-retrain")
+    t.start()
+    return {"status": "retraining_started", "eta_seconds": 120}
 
 
 # ─────────────────────────────────────────

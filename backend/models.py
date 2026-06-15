@@ -622,3 +622,54 @@ class HealthResponse(BaseModel):
     db_status: str = Field(..., description="Database connectivity status")
     simulation_cycles: int = Field(default=0, description="Number of simulation cycles completed")
     last_simulation: Optional[datetime] = Field(None, description="Timestamp of most recent simulation cycle")
+
+
+# ─────────────────────────────────────────
+# LSTM World Model Models
+# ─────────────────────────────────────────
+
+class AssetForecast(BaseModel):
+    """24-hour forecast for a single critical asset."""
+    asset_id: str = Field(..., description="Asset identifier")
+    asset_type: str = Field(..., description="Asset category: CRAC, Chiller, UPS")
+    forecast_horizon_hours: int = Field(default=24, description="Forecast horizon in hours")
+    predicted_wear_scores: List[float] = Field(default_factory=list, description="Predicted wear scores (24 values)")
+    predicted_temps: List[float] = Field(default_factory=list, description="Predicted inlet temperatures (24 values)")
+    confidence_scores: List[float] = Field(default_factory=list, description="Forecast confidence per hour (0–1)")
+    current_wear: float = Field(default=0.0, ge=0.0, le=1.0, description="Current wear score")
+    predicted_wear_24h: float = Field(default=0.0, ge=0.0, le=1.0, description="Predicted wear score in 24 hours")
+    hours_to_failure: Optional[float] = Field(None, description="Estimated hours until wear reaches 0.9")
+    risk_level: str = Field(default="LOW", description="CRITICAL/HIGH/MEDIUM/LOW")
+    attention_weights: List[float] = Field(default_factory=list, description="Attention over last 48 hours (48 values)")
+
+
+class WorldModelStatus(BaseModel):
+    """Health and readiness of the LSTM world model stack."""
+    lstm_ready: bool = Field(..., description="Whether LSTM model is loaded and has sufficient history")
+    ppo_ready: bool = Field(..., description="Whether PPO policy is trained")
+    history_length: int = Field(..., description="Current telemetry history buffer size")
+    history_required: int = Field(default=48, description="Minimum history needed for forecasting")
+    last_forecast_time: Optional[str] = Field(None, description="ISO timestamp of last forecast")
+    model_accuracy_score: float = Field(default=0.0, ge=0.0, le=100.0, description="Overall forecast accuracy 0–100")
+    total_forecasts_made: int = Field(default=0, description="Total forecasts produced since startup")
+    training_status: str = Field(default="idle", description="idle/training/complete/error")
+    model_path: str = Field(default="", description="Path to saved LSTM model weights")
+
+
+class ForecastComparison(BaseModel):
+    """Side-by-side comparison of PPO decisions with and without LSTM context."""
+    without_lstm: Dict[str, Any] = Field(default_factory=dict, description="PPO decision without LSTM")
+    with_lstm: Dict[str, Any] = Field(default_factory=dict, description="PPO decision with LSTM forecasts")
+    decisions_changed: int = Field(default=0, description="Number of assets where decision changed")
+    improvement_description: str = Field(default="", description="Human-readable improvement summary")
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Comparison timestamp")
+
+
+class RiskTimelineEntry(BaseModel):
+    """Single asset entry in the predicted failure risk timeline."""
+    asset_id: str = Field(..., description="Asset identifier")
+    asset_type: str = Field(default="", description="Asset category")
+    current_wear: float = Field(default=0.0, ge=0.0, le=1.0, description="Current wear score")
+    hours_to_failure: Optional[float] = Field(None, description="Estimated hours until wear reaches 0.9")
+    risk_level: str = Field(default="LOW", description="CRITICAL/HIGH/MEDIUM/LOW")
+    predicted_wear_24h: float = Field(default=0.0, ge=0.0, le=1.0, description="Predicted wear in 24 hours")

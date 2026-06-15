@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -36,6 +37,8 @@ except ImportError:
 logger = logging.getLogger(__name__)
 if not TORCH_AVAILABLE:
     logger.warning("PyTorch not available — PPO agent using rule-based fallback")
+
+LSTM_ENABLED: bool = os.getenv("LSTM_ENABLED", "true").lower() == "true"
 
 # ─── Asset configuration ──────────────────────────────────────────────────────
 
@@ -192,6 +195,8 @@ class MaintenanceAgent:
         self._model: Optional[Any] = None
         self._lock = threading.Lock()
         self._training_steps = 0
+        self._forecaster: Optional[Any] = None
+        self.world_model_enabled: bool = False
         self._load_if_exists()
 
     def _load_if_exists(self) -> None:
@@ -275,6 +280,72 @@ class MaintenanceAgent:
     @property
     def is_trained(self) -> bool:
         return self._model is not None
+
+    # ── LSTM world model integration ──────────────────────────────────────────
+
+    def enable_world_model(self, forecaster: Any) -> None:
+        """Attach an LSTMForecaster and enable enhanced observations."""
+        if not LSTM_ENABLED:
+            logger.info("LSTM_ENABLED=false — skipping world model attachment")
+            return
+        self._forecaster = forecaster
+        self.world_model_enabled = True
+        logger.info("World model enabled — PPO now using LSTM forecasts")
+
+    def _get_enhanced_observation(
+        self, obs: np.ndarray, telemetry: Optional[Any] = None
+    ) -> np.ndarray:
+        """
+        Append LSTM forecast embedding to the current PPO observation.
+
+        Falls back to returning obs unchanged if LSTM is not ready.
+        """
+        if (
+            self.world_model_enabled
+            and self._forecaster is not None
+            and LSTM_ENABLED
+        ):
+            try:
+                if self._forecaster.is_healthy():
+                    embedding = self._forecaster.get_forecast_embedding()
+                    return np.concatenate([obs, embedding]).astype(np.float32)
+            except Exception as exc:
+                logger.debug("Enhanced observation failed: %s", exc)
+        return obs
+
+    def get_recommendations_with_forecast(
+        self, telemetry: Optional[Any] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Like get_schedule() but each risk entry is augmented with a
+        forecast_context string from the LSTM forecaster.
+        """
+        schedule = self.get_schedule()
+        risk_summary = schedule.get("risk_summary", [])
+
+        forecast_context: Dict[str, Dict] = {}
+        if self.world_model_enabled and self._forecaster is not None:
+            try:
+                for item in self._forecaster.get_risk_timeline():
+                    forecast_context[item["asset_id"]] = item
+            except Exception:
+                pass
+
+        recommendations: List[Dict[str, Any]] = []
+        for asset in risk_summary:
+            aid = asset["asset_id"]
+            info = forecast_context.get(aid, {})
+            context = ""
+            if info:
+                hrs = info.get("hours_to_failure")
+                w24 = info.get("predicted_wear_24h", 0.5)
+                if hrs is not None and hrs < 48:
+                    context = f"LSTM projects wear reaching {w24:.2f} in {hrs:.0f} hours"
+                else:
+                    context = f"LSTM predicts wear at {w24:.2f} in 24h"
+            recommendations.append({**asset, "forecast_context": context})
+
+        return recommendations
 
 
 # ─── Singleton ────────────────────────────────────────────────────────────────
